@@ -1,59 +1,99 @@
 # The scheduled builder.
 #
-# Uses anthropics/claude-code-action@v1. Docs: https://code.claude.com/docs/en/github-actions
-# Auth: claude_code_oauth_token, minted once with `claude setup-token` and stored as the
-# CLAUDE_CODE_OAUTH_TOKEN repository secret. This runs on the Claude Max subscription, not an
-# API key, so a scheduled run costs no per-token dollars, only GitHub Actions minutes.
-# Verified against the vendor docs on 2026-09-26; see
-# Verified against the docs linked above on 2026-09-26.
-# this public repo, kept for the builder's own record).
+# Uses anthropics/claude-code-action@v1. Auth: claude_code_oauth_token, minted once with
+# `claude setup-token` and stored as the CLAUDE_CODE_OAUTH_TOKEN repository secret. This runs on
+# the Claude Max subscription, not an API key, so a run costs GitHub Actions minutes only.
 #
-# Builder note: verify the exact input names (`prompt`, `claude_code_oauth_token`,
-# `allowed_tools` or `claude_args`, if any) against the action's own README on day one. This
-# file is written to be correct in spirit; the action's interface can change.
+# Checked against the vendor docs on 2026-09-26:
+# - Scheduled runs work with no pull request or issue; `id-token: write` is needed for the
+#   Claude GitHub App. https://code.claude.com/docs/en/github-actions
+# - Bash commands must be listed in `--allowedTools` inside `claude_args`; there is no
+#   timeout input, so the job-level `timeout-minutes` bounds a run.
+#   https://github.com/anthropics/claude-code-action/blob/main/docs/configuration.md
+# - GitHub runs schedules from the default branch only and, in a public repository, turns
+#   them off after 60 days with no activity.
+#
+# One run at a time (the concurrency group). The queue rules below are the queue-recovery rule
+# in DECISIONS.md D-015 and review finding 6.
 
 name: Claude builder
 
 on:
   schedule:
-    - cron: "0 */2 * * *"
+    - cron: "17 */2 * * *"
   workflow_dispatch: {}
 
 permissions:
   contents: write
   pull-requests: write
-  issues: read
+  issues: write
   id-token: write
+
+concurrency:
+  group: claude-builder
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
       - name: Run Claude Code builder
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(gh:*),Bash(uv:*),Bash(npm:*),Bash(grep:*),Bash(ls:*),Bash(mkdir:*),Bash(date:*)"
           prompt: |
-            Read AGENTS.md and CLAUDE.md before doing anything else.
+            Read AGENTS.md and CLAUDE.md before doing anything else. Do exactly ONE of the
+            following, the first that applies, then stop.
 
-            Find the lowest-numbered change folder, changes/NNN-slug/, whose proposal.md has
-            status: ratified and that has no open pull request titled "[build] NNN-slug".
-            Check for an existing open PR with:
+            A. Repair. Look at open, non-draft pull requests titled "[build] NNN-slug"
+               (gh pr list --state open --search "[build] in:title" --json number,title,headRefName,headRefOid,isDraft).
+               For each, read the latest "Merge gate" workflow run summary
+               (gh run list --workflow merge-gate.yml --limit 1, then gh run view <id>) to see
+               why it waits. A pull request needs repair when its head commit is more than
+               4 hours old (two builder runs) and it waits for a failing CI job, a blocker in
+               the Claude or Codex review of that commit, a report problem, or a wall problem.
+               Waiting only for a review that has not arrived yet is NOT a repair case.
+               To repair: check out its branch, fix exactly the cause, commit with a subject
+               starting "repair: ", update report.md's "Review findings and disposition"
+               (each finding: fixed in <sha> | refuted because ...), push, and stop.
+               If the branch already has 2 commits whose subject starts "repair: ", do not
+               repair again: mark the pull request as a draft (gh pr ready --undo), append one
+               dated entry to changes/QUESTIONS.md on that branch explaining what keeps failing
+               and the options you see, push, and stop.
 
-              gh pr list --state open --search "[build] NNN-slug in:title"
+            B. Clean up stale claims. A branch named build/NNN-slug with no open pull request,
+               no merged pull request, and a newest commit more than 6 hours old is abandoned:
+               delete it (git push origin --delete build/NNN-slug). Then continue to C.
 
-            If no ratified change is eligible, exit cleanly and make no changes.
+            C. Build. The eligible change is the lowest-numbered changes/NNN-slug/ where ALL hold:
+               - its proposal.md says "status: ratified";
+               - every change named in its "depends_on:" line has a MERGED pull request titled
+                 "[build] <that change>" (gh pr list --state merged --search "[build] <slug> in:title");
+               - it has no open and no merged pull request titled "[build] NNN-slug", and no
+                 branch build/NNN-slug exists;
+               - its plan.md has a real grounded_at commit and "lane: claude" (or "codex or claude").
+               If none is eligible, exit cleanly and change nothing.
+               Otherwise follow AGENTS.md section 2 exactly, in order: claim with an empty commit
+               on a new branch before reading further; confirm grounded_at still holds; build
+               the tasks in tasks.md in order; run `uv sync`, `uv run ruff check .`,
+               `uv run ruff format --check .`, and `uv run pytest`; freeze a commit and review
+               your own diff against the spec's acceptance tests; run the file wall check
+               (git diff --name-only origin/main...HEAD) against the plan's wall_expected;
+               write changes/NNN-slug/report.md in the AGENTS.md section 5 shape; open a pull
+               request titled "[build] NNN-slug" whose body is the report followed by a section
+               headed exactly "## Wall check" containing the command and its full output.
 
-            Otherwise, follow AGENTS.md section 2 exactly, in order: claim the change with an
-            empty commit on a new branch before reading further, confirm the plan's
-            grounded_at commit still holds, build the tasks in tasks.md in order, run the tests,
-            freeze a commit and review your own diff against the spec's acceptance tests before
-            pushing, run the file wall check, write the return report in changes/NNN-slug/report.md using the
-            shape in AGENTS.md section 5, and open a pull request titled "[build] NNN-slug"
-            with the report as the body. Do not merge. Do not approve your own PR. Do not edit
-            a proposal's status. If you hit any stop-and-flag condition from AGENTS.md section
-            3, stop, write the flag into the report, and open the PR as a draft.
+            Never merge. Never approve your own pull request. Never edit a proposal's status,
+            a spec, a plan, anything under .github/, or any other standing-forbidden path. If
+            you hit a stop-and-flag condition from AGENTS.md section 3, write the flag into
+            the report and open the pull request as a draft.

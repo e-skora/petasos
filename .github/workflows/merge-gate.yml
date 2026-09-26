@@ -1,0 +1,56 @@
+# The merge gate (DECISIONS.md D-015): merges a builder pull request without a human, only when
+# a script can prove it is ready. No model runs here. The rules live in
+# .github/scripts/merge_gate.py and are tested by tests/test_merge_gate.py.
+#
+# Checked against GitHub's docs on 2026-09-26:
+# - A merge that satisfies the main ruleset needs no bypass actor; required checks from any
+#   source are accepted when no integration is pinned.
+#   https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets
+# - Events caused by GITHUB_TOKEN start no new workflow run, except workflow_dispatch. So the
+#   gate dispatches CI on main after a merge. Deploys are hand-started and never follow a merge.
+#   https://docs.github.com/en/actions/concepts/security/github_token
+# - Scheduled runs can be delayed at busy times (the top of the hour), so this runs off the hour.
+#   https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
+#
+# Scheduled workflows always run the copy on main, so a pull request cannot change the gate
+# that judges it.
+
+name: Merge gate
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would merge without merging"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+  actions: write
+
+concurrency:
+  group: merge-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Merge every ready builder pull request, one per run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_GATE_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: python .github/scripts/merge_gate.py

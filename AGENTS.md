@@ -19,7 +19,7 @@ Every change's `plan.md` lists `wall_expected` (paths you may change) and `wall_
 git diff --name-only origin/main...HEAD
 ```
 
-If any path is outside `wall_expected` or matches `wall_forbidden`, stop, revert that path, and say so in your report. Your own change's `tasks.md` (ticking boxes) and `report.md` are always allowed, whether or not the plan lists them. Standing-forbidden for every automated run, regardless of any plan: `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DESIGN.md`, `changes/**/proposal.md`, `changes/**/spec.md`, `changes/QUESTIONS.md` (append-only exception below), `.github/workflows/**`, `tests/test_no_private_identifiers.py`, `review/**`.
+If any path is outside `wall_expected` or matches `wall_forbidden`, stop, revert that path, and say so in your report. Your own change's `tasks.md` (ticking boxes) and `report.md` are always allowed, whether or not the plan lists them. Standing-forbidden for every automated run, regardless of any plan: `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DESIGN.md`, `changes/**/proposal.md`, `changes/**/spec.md`, `changes/**/plan.md`, `changes/QUESTIONS.md` (append-only exception below), `.github/**` (workflows and the merge gate), `tests/test_no_private_identifiers.py`, `tests/test_merge_gate.py`, `review/**`. The merge gate checks this list and the plan's `wall_expected` itself, from the copy on `main`, before it merges anything.
 
 ## 2. How work moves
 
@@ -34,8 +34,8 @@ proposal.md  ->  spec.md  ->  plan.md  ->  tasks.md  ->  build (PR)  ->  indepen
 - Write tests first or alongside; every invariant in `ARCHITECTURE.md §5` that your change touches gets a test named for the invariant.
 - Run the suite locally in your sandbox and report the count, but **CI is the only number that counts**. Never restate a suite number against a different commit than the one it was measured at.
 - Freeze, then review: once tasks are done, make a commit, then review your own diff against the spec's acceptance tests before pushing. Fix, commit again. Do not review a moving target.
-- Write `changes/NNN-slug/report.md` (shape in §5), commit it, push, open a PR titled `[build] NNN-slug` with the report as the body. Mark it ready for review, not draft.
-- Do not merge. Do not approve your own PR. Do not edit a proposal's `status`.
+- Write `changes/NNN-slug/report.md` (shape in §5), commit it, push, open a PR titled `[build] NNN-slug` whose body is the report followed by a section headed exactly `## Wall check` holding the wall-check command and its full output. Mark it ready for review, not draft.
+- Do not merge. Do not approve your own PR. Do not edit a proposal's `status`. The merge gate (`.github/workflows/merge-gate.yml`, DECISIONS.md D-015) merges a PR when CI is green, both reviews of the head commit have no blocker, the report says `Verdict: BUILT`, and the wall holds. A PR that still waits two builder runs later for a blocker, a failing check, or a report or wall problem is repaired by the next builder run, at most twice; after that it becomes a draft with a dated entry in `changes/QUESTIONS.md`.
 
 ## 3. Stop-and-flag conditions
 
@@ -95,7 +95,7 @@ Review the diff against `changes/NNN-slug/spec.md`, not against your own prefere
 7. Plain-language rule in anything user-facing; no em dashes.
 8. The report has no placeholders and its changed-file list matches the diff.
 
-Approve only when there are no blockers. A should-fix does not block approval but must be listed.
+Approve only when there are no blockers. A should-fix does not block approval but must be listed. The merge gate treats a finding line that starts with `blocker`, and any Codex `P0` or `P1` badge, as blocking the head commit it was made on.
 
 ## 7. Roles
 
@@ -103,7 +103,7 @@ Approve only when there are no blockers. A should-fix does not block approval bu
 - **Codex** (GitHub integration under ChatGPT Pro): automatic independent review on every PR; builds `lane: codex` changes when kicked off from chatgpt.com/codex; answers `@codex fix ...` on PRs.
 - **Claude in Cowork** (Elias's planning threads): writes proposals, specs, plans, tasks; runs close-outs; never pushes code to `main`.
 - **The ChatGPT reviewer project** (ChatGPT desktop app with Codex, its own clone of this repo): reviews every proposal and spec before ratification for gaps, viability, and better options; writes its reviews and any drafts under `review/` on `review/<topic>` branches and opens a PR; never edits the doc set on `main`. A proposal is not ratified until a review for it exists under `review/`.
-- **Elias**: ratifies, answers questions, merges (or, once auto-merge is on, reads reports). Only he changes a proposal's `status` or anything in `DECISIONS.md`.
+- **Elias**: ratifies, answers questions, starts releases, and reads reports. He merges nothing: the merge gate merges builds and the planning thread merges planning PRs after the reviewer's pass (D-015). Only he rules on a proposal's `status` or a decision; `DECISIONS.md` records only his rulings, in his words.
 
 `review/` is standing-forbidden for the builder (it reads it, never writes it).
 

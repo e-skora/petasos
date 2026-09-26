@@ -3,44 +3,37 @@
 Each task names the acceptance test numbers from `spec.md` section 3 it satisfies. Tick
 `- [ ]` to `- [x]` in the same commit that completes it.
 
-- [ ] Write `trust/manifest.py`: the `Manifest` dataclass with the fields in spec 1.1, no
-      tier field. Satisfies acceptance test 1.
-- [ ] Write `ledger/store.py` (SQLite schema, documenting which tables are chained) and
-      `ledger/chain.py` (`append`, `verify`). Satisfies acceptance tests 12, 13, 15.
-- [ ] Write `trust/tiers.py`: `derive_tier`, pure and monotone. Add the hypothesis-based test
-      that setting any one risk flag from False to True never lowers the tier. Satisfies
-      acceptance test 2. This is the task DECISIONS.md D-003 and ARCHITECTURE.md section 8
-      mean when they say hypothesis is used here.
-- [ ] Write `trust/verbs.py`: the verb table and `verb_for`, plus the test enumerating every
-      verb the table can produce and confirming each has a registered executor. Satisfies
-      acceptance test 3.
-- [ ] Write `trust/grants.py`: `GrantStore(path, approvers, clock)` and `stage`, storing
-      `manifest_json` and `manifest_hash` (spec 1.18) on the grant, with `Grant.for_proposer()`
-      / `Grant.for_approver()` (spec 1.19) and `list_pending(viewer_is_approver)`. Satisfies
-      acceptance tests 4 and 17.
-- [ ] Add `GrantStore.approve` exactly as spec 1.8 describes: approver check first (spec 1.17),
-      then one `BEGIN IMMEDIATE` transaction with the compare-and-swap `UPDATE`, the partial
-      unique index on `(verb, token) WHERE state='AWAITING'`, and the concurrent-approval test.
-      Satisfies acceptance test 5.
-- [ ] Add the verb-mismatch burn (spec 1.8 step 2) and its two tests: the plain burn, and the
-      right-verb versus wrong-verb race. Satisfies acceptance tests 6 and 16.
-- [ ] Add the non-approver refusal path (grant untouched, later approval by an approver still
-      succeeds) and its test. Satisfies acceptance test 7.
-- [ ] Add the 24-hour TTL, the expiry sweep on `list` and `approve`, and the frozen-clock test
-      that advances time past expiry. Satisfies acceptance test 8.
-- [ ] Add the per-verb-family rate rails (`rail_for`, used by both `stage` and `approve`) and
-      the six-in-an-hour test. Satisfies acceptance test 9.
-- [ ] Write `trust/executor.py`: `Executor.run`, re-hashing the manifest and refusing on
-      mismatch, with its test. Satisfies acceptance test 10.
-- [ ] Write `trust/constraints.py`: the hard-constraint deny list, checked before tier
-      derivation, with the `disable_gate`-denied-at-every-tier test. Satisfies acceptance
-      test 11.
-- [ ] Add the outcome-sentence table (a fixed dict, result code to plain sentence) and the
-      test proving every result code has a sentence and no sentence contains a code or an id.
-      Record in `report.md` which module the table lives in. Satisfies acceptance test 14.
-- [ ] Add the import-hygiene test: importing `petasos.trust` and `petasos.ledger` touches no
-      network, no environment variable, and no file outside a temporary directory. Satisfies
-      acceptance test 15.
+- [ ] Write `storage.py`: `Database(path)`, `connect()`, `transaction()`, `migrate()` (spec
+      1.9). Satisfies acceptance test 38 (the storage half).
+- [ ] Write `ledger/store.py` (schema and the docstring in spec 1.23) and `ledger/chain.py`
+      (`append` inside the caller's transaction, `verify`). Satisfies acceptance tests 34, 35.
+- [ ] Write `trust/risk.py`: `RiskProfile`, `InvalidProfile`, `Tier`, `derive_tier`,
+      `verb_for`, `rail_for`, `POLICY_VERSION`. Add the hypothesis monotonicity test and the
+      17-row expected table test. Satisfies acceptance tests 1, 2, 3, 4.
+- [ ] Write `trust/record.py`: `ActionRecord`, `canonical_json`, `record_hash`, with the
+      one-field-differs test for every field and the float refusal. Satisfies acceptance
+      test 6.
+- [ ] Write `trust/tools.py`: `ToolDefinition`, `ToolRegistry` (duplicate names refused),
+      `Resolved`, `InvalidArguments`, `NotFound`.
+- [ ] Write `trust/outcomes.py` with a sentence for every result code in spec section 1.
+      Satisfies acceptance test 37.
+- [ ] Write `trust/constraints.py`. Satisfies acceptance tests 30, 31 once the gate exists.
+- [ ] Write `trust/grants.py`: staging with rail reservation, the two grant views, and
+      `list_pending(viewer)`. Satisfies acceptance tests 7, 15, 18.
+- [ ] Add approve exactly as spec 1.12 describes, with its tests. Satisfies acceptance tests
+      8, 9, 10, 11, 12.
+- [ ] Add the expiry sweep (spec 1.14) with the boundary-instant tests. Satisfies acceptance
+      tests 13, 14.
+- [ ] Add abort and `abort_all` with slot release (spec 1.13, 1.15). Satisfies acceptance
+      tests 16, 17, 28.
+- [ ] Write `trust/executor.py`: `Executor.run(grant_id)` in one transaction (spec 1.16).
+      Satisfies acceptance tests 19 to 27.
+- [ ] Write `trust/gate.py`: `Gate.propose` and direct actions (spec 1.2, 1.5, 1.17, 1.19).
+      Satisfies acceptance tests 5, 29, 30, 31, 32, 33.
+- [ ] Add the ledger-content scan over every row the suite wrote. Satisfies acceptance
+      test 36.
+- [ ] Add the import-hygiene test for `petasos.trust`, `petasos.ledger`, `petasos.storage`.
+      Satisfies acceptance test 38 (the import half).
 - [ ] Write `changes/001-trust-core/report.md` per AGENTS.md section 5.
       Check: `grep -nE '<!--|TODO|TBD|\[fill' changes/001-trust-core/report.md` returns
       nothing.

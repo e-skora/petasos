@@ -2,7 +2,7 @@
 
 Status: PROPOSED (drafted 2026-09-26, awaiting Elias's ratification). Once ratified, this file is the source of truth for scope. If a chat, a task, or an agent disagrees with it, this file wins until it is deliberately revised and its version bumped.
 
-Version: 0.1-proposed
+Version: 0.2-proposed (2026-09-26: aligned with D-015 to D-017)
 
 ## 1. One sentence
 
@@ -29,8 +29,8 @@ Every part of the project is ranked against this: a reviewer who spends two minu
 Each rung deepens belief in the takeaway sentence. Each is a separate deliverable.
 
 1. **Read** (2 minutes): the README case study. Leads with WHY each safety choice exists, then shows it.
-2. **Watch** (5 minutes): a recorded terminal transcript and a short screen recording of the demo app. Three client identities behave differently; a canary catches a leak; an approval is held and released.
-3. **Connect** (10 minutes): the reviewer pastes `https://api.petasos.io/mcp` and a published demo token into their own Claude, Codex, or curl, and experiences the gate personally.
+2. **Watch** (5 minutes): a recorded terminal transcript and a short screen recording of the demo app. Three client identities behave differently; a canary trips when someone tries to read the one ticket it is planted in; an approval is held and released.
+3. **Connect** (10 minutes): the reviewer mints a one-hour visitor session with one documented command, then pastes `https://api.petasos.io/mcp` and a session token into their own Claude, Codex, or curl, and experiences the gate personally.
 4. **Inspect** (30 minutes): the repo. Tests, the `changes/` ledger showing how it was built by agents, the decisions log.
 
 ## 5. Who it is for, and not for
@@ -47,18 +47,18 @@ One repository, three deliverables.
 
 | Module | What it does, in plain language | Source of the design |
 |---|---|---|
-| `petasos.trust` | Turns a structured description of an action (the **manifest**) into a risk level L1 to L5 using fixed rules. Issues **grants** for risky actions: a single-use token bound to a verb, with an expiry, a rate limit per hour, and an abort switch. Runs the action only after a human confirms, and re-checks the manifest right before running. | Talaria trust gradient |
-| `petasos.ledger` | An append-only audit log where each row's hash includes the previous row's hash, so editing history is detectable. States plainly which tables are chained and which are not. | Talaria trust ledger |
+| `petasos.trust` | Turns a tool's server-owned **risk profile** (what it mutates, whether it is reversible, whether it moves money or deletes) into a risk level L1 to L5 using fixed rules. Issues **grants** for risky actions: a single-use token bound to a verb, with an expiry, a rate limit per hour, and an abort switch. A grant authorizes one immutable **action record**, the exact arguments a person approved, never a risk description alone; the executor re-checks that record right before running. | Talaria trust gradient |
+| `petasos.ledger` | An append-only audit log where each row's hash includes the previous row's hash, so editing a row after the fact breaks the chain from that point on. States plainly which tables are chained and which are not. | Talaria trust ledger |
 | `petasos.memory` | A tiny tiered memory store (tiers T0 public to T5 private-local). Anything at T4 or above gets a hidden **canary** token. A **guard** scans every outgoing payload for canaries and aborts on a hit, no matter who is asking. | Talaria canaries and privacy guard |
 | `petasos.mcp` | An MCP server over plain HTTPS (the "streamable HTTP" transport, which is the standard way to reach an MCP server on the internet). Unauthenticated requests get a 401 *before* the protocol handshake, so a stranger never learns which tools exist. Each client identity has a memory-tier ceiling and an action scope. Browsers are refused. Every response passes through the guard; the only exemptions are listed in one place and a test fails if a new one appears. | Talaria MCP spine |
-| `petasos.explain` (stretch) | Every gate verdict carries one plain-English sentence built only from facts the gate has ("Staged for approval because it sends email to an external address"). | Talaria routing-reason tap, adapted |
-| `petasos.intent` (stretch) | A pure text module answering a different question from the tier rules: "did the human actually ask for this?" Reported speech, negation, and completion are vetoes. Uncertainty resolves toward asking. | Talaria intent gate |
+
+`petasos.explain` and `petasos.intent` are v2 candidates, not part of v1. In v1, every gate result still gets a plain-language outcome sentence, drawn from a small fixed table in `petasos.trust` rather than generated freely.
 
 ### 6.2 The reference server and demo app: "Hermes Helpdesk"
 
 A fake customer-support desk with obviously invented tickets and customers.
 
-Tools exposed over MCP (the tier is derived by rule from each tool's manifest, never declared):
+Tools exposed over MCP (the tier is derived by rule from each tool's risk profile, never declared):
 
 | Tool | What it does | Expected tier |
 |---|---|---|
@@ -69,11 +69,11 @@ Tools exposed over MCP (the tier is derived by rule from each tool's manifest, n
 | `delete_ticket` | Irreversible delete | L5 |
 | `list_pending_approvals`, `approve`, `abort` | Owner-only approval surface | walled to owner |
 
-Three published demo client identities: `visitor` (reads only, T0 memory ceiling), `agent` (an external model: reads plus staged writes, T3 ceiling), `owner` (approves and aborts, T4 ceiling). One hidden canary ticket exists that must never appear in any listing; fetching it by id from any client trips the guard and is logged.
+A visitor mints a one-hour session carrying three client identities in its own data namespace: `visitor` (reads only, T0 memory ceiling), `agent` (an external model: reads plus staged writes, T3 ceiling), `owner` (approves and aborts, T4 ceiling). The public owner identity is a simulation of approval, not proof a human approved; a real deployment approves through protected credentials instead. A proposer credential can never approve its own request. One hidden canary ticket exists that must never appear in any listing; fetching it by id from any client trips the guard and is logged.
 
-The demo web app (served from petasos.io) shows: the ticket list, an approvals inbox with press-and-hold (1.2 s for L4, 2.5 s for L5), a quiet "N waiting for you" pill, a ledger viewer with a "verify chain" button, and a "trip the canary" button that shows the abort live.
+The demo web app (served from petasos.io) leads with a guided scenario, an "Ask for a $42 refund" button (see change 004), and also shows: the ticket list, an approvals inbox with press-and-hold (1.2 s for L4, 2.5 s for L5), a quiet "N waiting for you" pill, a ledger viewer with a "verify chain" button, and a "trip the canary" button that shows the abort live.
 
-Demo hygiene: tokens are public, so the server rate-limits per token, resets the fake data every hour, and never stores anything a visitor types beyond that hour.
+Demo hygiene: each visitor session has its own per-session quotas, which sit under global abuse ceilings that a data reset never clears; a session's fake data, including anything a visitor typed, is deleted when the session expires within the hour.
 
 ### 6.3 The site: petasos.io
 
@@ -99,7 +99,7 @@ Vector memory and embeddings; multi-vendor model routing and cost ledger; the ju
 ## 9. Constraints
 
 - **Timeline:** mostly finished within two weeks of ratification (target 2026-10-10). "Mostly" means rungs 1 to 3 live and the stretch modules optional.
-- **Elias's time:** about 15 minutes a day: ratify proposals, answer questions, click merge. One-time setup of roughly an hour (accounts, secrets, DNS).
+- **Elias's time:** about 15 minutes a day: ratify proposals, answer questions, and read reports; a deterministic merge gate merges builds, so Elias merges nothing, and starting a release is a separate, hand-started act. One-time setup of roughly an hour (accounts, secrets, DNS).
 - **Cost:** hosting under $10/month. No LLM API keys required by the build loop (subscriptions only).
 - **Hygiene rule 1, patterns not identifiers:** the design is re-expressed; no real token formats, canary prefixes, hostnames, client names, paths, or people from the private project.
 - **Hygiene rule 2, separate infrastructure:** own domain (petasos.io), own hosting account, own GitHub repo, fully apart from the private system.

@@ -11,6 +11,7 @@ Format: `D-NNN | status | date | decision | why | alternatives rejected`.
 - Decision: Petasos is a **trust gate for AI agents**: a Python library (`petasos`), a reference MCP server with a fake help desk, and a demo app plus site at petasos.io. It is a reference implementation and says so.
 - Why: the July spec (archived) was a two-tool help desk showing three tiers. The Talaria scan found the safety layer is the real differentiator and is worth showing whole: rule-derived tiers, single-use grants, canary leak detection, fail-closed MCP auth, tamper-evident audit, press-and-hold approvals. A library framing lets a reviewer read one module at a time; the help desk is only the stage set.
 - Rejected: "port all of Talaria" (66k lines, personal, unshippable in two weeks); "just the MCP demo" (too thin to carry the takeaway sentence).
+- Note 2026-09-26: superseded in part by D-016. The module list loses `explain` and `intent` (changes 007 and 008 leave v1); the gate binds an immutable action record rather than a manifest; the v1 promise is the exact-refund-approval journey.
 
 ## D-002 Name and voice
 - Status: RATIFIED by Elias 2026-09-26 ("we'll still call it petasos")
@@ -29,6 +30,7 @@ Format: `D-NNN | status | date | decision | why | alternatives rejected`.
 - Decision: the API and MCP server run on **Fly.io** (one `shared-cpu-1x` machine, about $2/month, auto-stop off so the demo is always warm) at **api.petasos.io**, DNS-proxied through Cloudflare (orange cloud) for edge rate limiting and WAF. The site and demo app are static on **Cloudflare Pages** at **petasos.io** (free). Deploys run from GitHub Actions on merge to `main`.
 - Why: cheapest always-on Python box; Cloudflare proxy protects a server that publishes its own demo tokens; Pages is free and fast. A Cloudflare Tunnel sidecar was rejected because it bypasses Fly's proxy.
 - Rejected: Railway Hobby ($5/month flat; fine, but Fly is cheaper and the auto-stop story is documented); running the API on Pages Functions (no long-lived process for the ledger).
+- Note 2026-09-26: the "Deploys run from GitHub Actions on merge to `main`" clause is superseded. Deploys are started by hand with an exact commit (review finding 8, adopted with Elias's "otherwise yes to everything"); see D-015.
 
 ## D-005 Repository
 - Status: PROPOSED
@@ -47,17 +49,20 @@ Format: `D-NNN | status | date | decision | why | alternatives rejected`.
 - Why: everything runs on subscriptions he already pays for, nothing depends on his Mac being awake, and CI runs the real test suite (the thing Talaria's cloud builder could never do, which is why its numbers were "advisory"). Verified against the vendors' current docs on 2026-09-26; the workflow files cite the doc URLs.
 - Known limit: Codex cannot be scheduled from CI on the Pro subscription without an API key; that is why Claude Code holds the scheduled builder role and Codex holds review.
 - Rejected: Claude Code Routines as the scheduler (works, but the GitHub Action lives in the repo where a reviewer can read it); an OpenAI API key (cost, and not needed).
+- Note 2026-09-26: superseded in part by D-015. `main` has zero required reviews; the merge gate merges builds; Elias merges nothing; the week-one and week-two clauses no longer apply. The ChatGPT reviewer role and the rule that nothing is ratified before its review are unchanged.
 
 ## D-007 The change process
 - Status: PROPOSED (structure requested by Elias 2026-09-26)
 - Decision: every meaningful change is a folder `changes/NNN-slug/` with `proposal.md` (why, what, not), `spec.md` (binding decisions and acceptance tests), `plan.md` (file lane, walls, order, stop-and-flag conditions), `tasks.md` (the checklist the builder drains), and after the build `report.md` (what landed, test delta, deviations, review findings and their disposition). A `status:` field on the proposal moves `proposed -> ratified -> building -> in-review -> merged`. Only Elias moves it to `ratified`. The builder never edits a status; build state is derived from branches and PRs.
 - Rules carried from Talaria's factory: claim-before-work with an empty commit; a mechanical file-wall check before push; freeze the commit, then review, then fix; a return report with zero placeholders (grep-gated); agent-authored proposals only for forced fixes, everything with a judgment call becomes a dated question in `changes/QUESTIONS.md`.
 - Why: chat is ephemeral; the folder is the memory. Derived state avoids the lost-status-flip bug class Talaria hit.
+- Note 2026-09-26: the builder's queue rules (one run at a time, dependency and merged-change checks, stale-claim cleanup, at most two repairs) are in `.github/workflows/claude-builder.yml` and AGENTS.md section 2, per D-015.
 
 ## D-008 Hygiene: patterns, not identifiers
 - Status: PROPOSED (continues the July rule)
 - Decision: a test (`tests/test_no_private_identifiers.py`) greps the whole repo for a denylist: the private project's hostnames, GitHub path, service labels, secret-store slot names, historical canary prefix, client header name, env var prefix, home-directory paths, and the names of people in Elias's life. Talaria the word is allowed. **The denylist is itself private**, so it is never committed: CI reads it from the GitHub secret `PRIVATE_DENYLIST` (one entry per line); a local run without the secret skips the test with a visible warning. The master copy lives in the git-ignored `_private/` directory of the planning folder.
 - Why: the scan found real names, hostnames, and paths in code comments and reports; a rule without a test drifts; and publishing the list would publish the identifiers.
+- Note 2026-09-26: in CI the `private-identifiers` job now fails when the secret is missing or empty, so a skipped scan never looks like a pass (review finding 5). Local runs still skip with a warning.
 
 ## D-009 Approvals are a button or press-and-hold, never a typed phrase
 - Status: PROPOSED (inherits Elias's Talaria ruling of 2026-08-19, enforced 2026-09-03)
@@ -68,11 +73,13 @@ Format: `D-NNN | status | date | decision | why | alternatives rejected`.
 - Status: PROPOSED
 - Decision: fictional company and customers (no real brand, no real person); three demo tokens published in the README; per-token rate limits (30 reads/min, 5 staged writes/hour, 2 L5 stagings/hour), which stack on top of the trust core's global per-verb-family rails from change 001 (two independent layers, both apply); fake data reset hourly; nothing a visitor types survives the reset. One canary ticket, never listed.
 - Why: public tokens are what make rung 3 self-serve; limits and resets keep bots from burning the box.
+- Note 2026-09-26: the "three demo tokens published in the README" clause is superseded by D-017 (minted one-hour visitor sessions). Per-session quotas replace per-token limits; global abuse ceilings stay and are not cleared by a data reset.
 
 ## D-011 Scope walls (v1)
 - Status: PROPOSED
 - Decision: out of v1: vector memory, model routing and cost ledger, judge quorum, relay engine, eval harness, chat/projects/files, scheduler, skills, real email or payments, OAuth, dark mode, push. Listed as v2 candidates: relay engine, eval harness with calibration rows, OAuth 2.1.
 - Why: two weeks. Each excluded item either needs live vendor keys to demo or is not part of the safety story.
+- Note 2026-09-26: superseded in part by D-016. The v1 stretch list (explain, intent gate) is out of v1; both join the v2 candidates.
 
 ## D-012 License
 - Status: PROPOSED

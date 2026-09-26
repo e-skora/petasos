@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The merge gate dispatches this on main after it merges, because a merge made with
+  # GITHUB_TOKEN starts no push run.
+  workflow_dispatch: {}
 
 concurrency:
   group: ci-${{ github.ref }}

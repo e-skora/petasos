@@ -2,7 +2,7 @@
 
 status: proposed
 lane: claude
-depends_on: 000-bootstrap (parallel with 001-trust-core; disjoint wall)
+depends_on: 001-trust-core (uses its `storage.Database`)
 decisions: D-001, D-003
 
 ## Why
@@ -11,7 +11,7 @@ A demo that only gates actions is half the story: private memory must not leak e
 
 ## What this change delivers
 
-`petasos.memory`: a tiered entry store (T0 public through T5 private-local, each entry carrying an `expires_at` flag), a canary module that mints one hidden token per T4-or-above entry and never re-mints it, and a destination-blind guard that scans any outgoing payload for planted canaries and aborts on a hit regardless of who is asking.
+`petasos.memory`: a tiered entry store (T0 public through T5 private-local, each entry carrying an `expires_at` flag), a canary module that mints one hidden token per T4-or-above entry and never re-mints it, and a destination-blind guard that scans any outgoing payload for planted canaries and aborts on a hit regardless of who is asking. Canaries are a detector with stated limits: they catch a payload that contains the planted marker, not leaks in general; tier filtering in `petasos.trust` is the primary control.
 
 ## What this change does not deliver
 

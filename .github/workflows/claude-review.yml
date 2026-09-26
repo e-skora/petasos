@@ -1,50 +1,76 @@
-# The second, cheaper code review on every pull request, run through the code-review plugin.
+# The Claude code review on every pull request, run through the code-review plugin.
 #
-# Uses anthropics/claude-code-action@v1. Docs: https://code.claude.com/docs/en/github-actions
-# and, for the plugin invocation itself, https://code.claude.com/docs/en/code-review
-# Auth: the same claude_code_oauth_token as the other workflows, minted with
+# Uses anthropics/claude-code-action@v1. Auth: the claude_code_oauth_token minted with
 # `claude setup-token` on the Claude Max subscription, not an API key.
 #
-# Builder note: the `plugins` and `allowed_bots` inputs were checked against the action's
-# action.yml on 2026-09-26. The exact bot username the Claude GitHub App uses and the plugin
-# invocation flags still need one live test on the first builder pull request.
+# Checked against the vendor docs on 2026-09-26:
+# - The plugin needs both `plugin_marketplaces` and `plugins`; with `--comment` it posts one
+#   inline comment per issue, or one summary comment when it finds none.
+#   https://code.claude.com/docs/en/github-actions
+# - In automation mode (a `prompt` is given) Claude may run no Bash command unless it is listed
+#   in `--allowedTools` inside `claude_args`.
+#   https://github.com/anthropics/claude-code-action/blob/main/docs/configuration.md
+# - With the Claude GitHub App (no `github_token` input) comments post as `claude[bot]`.
+#   https://github.com/anthropics/claude-code-action/blob/main/docs/faq.md
+# - `allowed_bots` is a comma-separated list of bot logins allowed to trigger the run.
+#   https://github.com/anthropics/claude-code-action/blob/main/action.yml
+#
+# The merge gate (.github/scripts/merge_gate.py) reads the summary comment this review ends
+# with. Its first three lines are a contract: do not change them without changing the gate.
 
 name: Claude review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
   pull-requests: write
-  issues: read
+  issues: write
   id-token: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
+    if: startsWith(github.event.pull_request.title, '[build] ') && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Run the code review plugin
+      - name: Run the code review plugin, then post the gate summary
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # The action's own action.yml exposes these inputs (checked 2026-09-26):
-          # `plugins` installs the code-review plugin; `allowed_bots` lets a pull request
-          # opened by the Claude builder (a bot identity) trigger this review at all.
-          plugins: |
-            code-review@claude-code-plugins
-          allowed_bots: "claude[bot],claude,github-actions[bot]"
+          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
+          plugins: "code-review@claude-code-plugins"
+          allowed_bots: "claude[bot]"
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
           prompt: |
-            Run /code-review:code-review --comment against this pull request.
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD COMMIT: ${{ github.event.pull_request.head.sha }}
 
+            Step 1. Run /code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
             Review the diff against the spec.md of the change folder it implements
-            (changes/NNN-slug/spec.md, matched from the PR title "[build] NNN-slug") and
-            against the checklist in AGENTS.md section 6. Post findings as inline PR comments
-            in the shape AGENTS.md section 6 describes: one finding per comment, severity,
-            file and line, what is wrong, REPRODUCED or REASONED, and a suggested fix. Do not
-            approve or merge the pull request.
+            (changes/NNN-slug/spec.md, where NNN-slug comes from the title "[build] NNN-slug")
+            and against the checklist in AGENTS.md section 6. Start every inline finding with
+            its severity in the AGENTS.md section 6 shape: "blocker | file:line | ...",
+            "should-fix | ...", or "nit | ...". A blocker is anything that breaks an acceptance
+            test, an ARCHITECTURE.md section 5 invariant, fail-closed behavior, the file wall, or
+            the private-identifier rule.
+
+            Step 2. Post exactly one more PR comment with `gh pr comment`, whose first three
+            lines are exactly these, with the numbers filled in:
+            Petasos review: claude
+            Commit: ${{ github.event.pull_request.head.sha }}
+            Blockers: <the number of blocker findings from step 1, 0 if none>
+            Then a blank line and one plain-language sentence per finding, blockers first.
+
+            Do not approve, request changes, or merge. Do not edit any file.
