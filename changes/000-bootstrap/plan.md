@@ -1,9 +1,7 @@
 # Plan: 000-bootstrap
 
-grounded_at: `<first commit>` (fill in at claim time. This is the change that creates the
-repository's history, so there is no prior commit to ground against. The builder's claim
-commit is itself the first commit; record its sha here once it exists, in the same commit
-that ticks the first task.)
+grounded_at: `110b9a0` (the seed commit on `main`, 2026-09-26; the planning thread sets this
+value at ratification, and the builder only checks it)
 
 lane: claude
 
@@ -16,6 +14,8 @@ wall_expected:
 - `uv.lock`
 - `fly.toml`
 - `Dockerfile`
+- `changes/000-bootstrap/tasks.md` (ticking boxes only)
+- `changes/000-bootstrap/report.md`
 
 wall_forbidden: everything listed as standing-forbidden in AGENTS.md section 1: `AGENTS.md`,
 `CLAUDE.md`, `DECISIONS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DESIGN.md`,
@@ -31,7 +31,8 @@ direction: do not edit them, and do not expect to need to.
 1. `src/petasos/__init__.py`: a package that sets `__version__ = "0.1.0"` and nothing else.
 2. `tests/test_smoke.py`: imports `petasos`, asserts `petasos.__version__` is a non-empty
    string.
-3. Run `uv sync` so `uv.lock` is generated and committed.
+3. Run `uv sync` so `uv.lock` is generated and committed. From the next change onward CI
+   installs with `uv sync --locked`, so the lockfile must be committed here.
 4. `Dockerfile`: a small image that installs the project with `uv` and runs
    `uvicorn petasos.app:create_app --factory --host 0.0.0.0 --port 8080`. `petasos.app` does
    not exist yet; this file is accepted as inert scaffolding for change 005 and is not built

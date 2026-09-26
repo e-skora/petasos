@@ -19,7 +19,7 @@ Every change's `plan.md` lists `wall_expected` (paths you may change) and `wall_
 git diff --name-only origin/main...HEAD
 ```
 
-If any path is outside `wall_expected` or matches `wall_forbidden`, stop, revert that path, and say so in your report. Standing-forbidden for every automated run, regardless of any plan: `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DESIGN.md`, `changes/**/proposal.md`, `changes/**/spec.md`, `changes/QUESTIONS.md` (append-only exception below), `.github/workflows/**`, `tests/test_no_private_identifiers.py`, `review/**`.
+If any path is outside `wall_expected` or matches `wall_forbidden`, stop, revert that path, and say so in your report. Your own change's `tasks.md` (ticking boxes) and `report.md` are always allowed, whether or not the plan lists them. Standing-forbidden for every automated run, regardless of any plan: `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DESIGN.md`, `changes/**/proposal.md`, `changes/**/spec.md`, `changes/QUESTIONS.md` (append-only exception below), `.github/workflows/**`, `tests/test_no_private_identifiers.py`, `review/**`.
 
 ## 2. How work moves
 
@@ -29,7 +29,7 @@ proposal.md  ->  spec.md  ->  plan.md  ->  tasks.md  ->  build (PR)  ->  indepen
 
 - A change is eligible to build when its `proposal.md` has `status: ratified` and no open PR names it in the title.
 - **Claim before work.** Create branch `build/NNN-slug` from `main`, push one empty commit `claim: NNN-slug` immediately, before reading further. If the push is rejected, another run owns it: stop. Never retry with a suffixed branch name.
-- Ground yourself: `plan.md` names a `grounded_at` commit. If `main` has moved past it in a way that touches your wall, stop and flag.
+- Ground yourself: `plan.md` names a `grounded_at` commit, set by the planning thread at ratification (never by you). If `main` has moved past it in a way that touches your wall, or the value is missing, stop and flag.
 - Build the tasks in `tasks.md` in order. Tick each `- [ ]` to `- [x]` in the same commit that completes it.
 - Write tests first or alongside; every invariant in `ARCHITECTURE.md §5` that your change touches gets a test named for the invariant.
 - Run the suite locally in your sandbox and report the count, but **CI is the only number that counts**. Never restate a suite number against a different commit than the one it was measured at.

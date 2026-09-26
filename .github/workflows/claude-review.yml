@@ -5,10 +5,9 @@
 # Auth: the same claude_code_oauth_token as the other workflows, minted with
 # `claude setup-token` on the Claude Max subscription, not an API key.
 #
-# Builder note: the research note behind this file (verified 2026-09-26) describes the
-# invocation as `/code-review:code-review --comment` run through claude-code-action. Verify
-# the exact plugin name and flags against https://code.claude.com/docs/en/code-review on day
-# one; the shape below is written to be correct in spirit, not copied from a working example.
+# Builder note: the `plugins` and `allowed_bots` inputs were checked against the action's
+# action.yml on 2026-09-26. The exact bot username the Claude GitHub App uses and the plugin
+# invocation flags still need one live test on the first builder pull request.
 
 name: Claude review
 
@@ -34,6 +33,12 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The action's own action.yml exposes these inputs (checked 2026-09-26):
+          # `plugins` installs the code-review plugin; `allowed_bots` lets a pull request
+          # opened by the Claude builder (a bot identity) trigger this review at all.
+          plugins: |
+            code-review@claude-code-plugins
+          allowed_bots: "claude[bot],claude,github-actions[bot]"
           prompt: |
             Run /code-review:code-review --comment against this pull request.
 
