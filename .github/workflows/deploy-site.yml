@@ -1,0 +1,56 @@
+# Builds the demo app, folds it into the static site, and deploys the site to Cloudflare
+# Pages on every push to main that touches the site or the demo app. Flags and action
+# versions must be verified against current vendor docs before the first real run:
+# https://developers.cloudflare.com/pages/ and https://github.com/cloudflare/wrangler-action
+
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "demo/**"
+
+concurrency:
+  group: deploy-site-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check whether the demo app exists yet
+        id: demo
+        run: |
+          if [ -f demo/package.json ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Install demo dependencies
+        if: steps.demo.outputs.present == 'true'
+        working-directory: demo
+        run: npm ci
+
+      - name: Build demo app
+        if: steps.demo.outputs.present == 'true'
+        working-directory: demo
+        run: npm run build
+
+      - name: Copy demo build into the site
+        if: steps.demo.outputs.present == 'true'
+        run: |
+          mkdir -p site/demo
+          cp -r demo/dist/. site/demo/
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site --project-name petasos

@@ -1,0 +1,43 @@
+# Interactive @claude mentions on issues and pull request review comments.
+#
+# Uses anthropics/claude-code-action@v1 in its interactive mode (no prompt input, so the
+# action reads the triggering comment itself). Docs: https://code.claude.com/docs/en/github-actions
+# Auth: the same claude_code_oauth_token as claude-builder.yml, minted with `claude setup-token`
+# on the Claude Max subscription, not an API key.
+#
+# Builder note: verify the exact trigger condition and any required inputs against the
+# action's own README on day one.
+
+name: Claude mention
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+  id-token: write
+
+jobs:
+  respond:
+    # Only the repo owner and collaborators may summon the builder; a public commenter must not
+    # be able to trigger a job that holds write permissions.
+    if: >-
+      contains(github.event.comment.body, '@claude') &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

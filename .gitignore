@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+
+# uv
+.uv/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Private planning material, never part of the public repo
+_private/
+archive/
+
+# Local data
+*.sqlite*
+.env
+
+# Built site and demo assets
+demo/dist
+site/demo
+
+# OS
+.DS_Store

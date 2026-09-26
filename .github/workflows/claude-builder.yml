@@ -1,0 +1,59 @@
+# The scheduled builder.
+#
+# Uses anthropics/claude-code-action@v1. Docs: https://code.claude.com/docs/en/github-actions
+# Auth: claude_code_oauth_token, minted once with `claude setup-token` and stored as the
+# CLAUDE_CODE_OAUTH_TOKEN repository secret. This runs on the Claude Max subscription, not an
+# API key, so a scheduled run costs no per-token dollars, only GitHub Actions minutes.
+# Verified against the vendor docs on 2026-09-26; see
+# Verified against the docs linked above on 2026-09-26.
+# this public repo, kept for the builder's own record).
+#
+# Builder note: verify the exact input names (`prompt`, `claude_code_oauth_token`,
+# `allowed_tools` or `claude_args`, if any) against the action's own README on day one. This
+# file is written to be correct in spirit; the action's interface can change.
+
+name: Claude builder
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code builder
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read AGENTS.md and CLAUDE.md before doing anything else.
+
+            Find the lowest-numbered change folder, changes/NNN-slug/, whose proposal.md has
+            status: ratified and that has no open pull request titled "[build] NNN-slug".
+            Check for an existing open PR with:
+
+              gh pr list --state open --search "[build] NNN-slug in:title"
+
+            If no ratified change is eligible, exit cleanly and make no changes.
+
+            Otherwise, follow AGENTS.md section 2 exactly, in order: claim the change with an
+            empty commit on a new branch before reading further, confirm the plan's
+            grounded_at commit still holds, build the tasks in tasks.md in order, run the tests,
+            freeze a commit and review your own diff against the spec's acceptance tests before
+            pushing, run the file wall check, write the return report in changes/NNN-slug/report.md using the
+            shape in AGENTS.md section 5, and open a pull request titled "[build] NNN-slug"
+            with the report as the body. Do not merge. Do not approve your own PR. Do not edit
+            a proposal's status. If you hit any stop-and-flag condition from AGENTS.md section
+            3, stop, write the flag into the report, and open the PR as a draft.

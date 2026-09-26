@@ -1,0 +1,17 @@
+# Default owner for everything in the repository.
+* @e-skora
+
+# The doc set.
+/AGENTS.md @e-skora
+/CLAUDE.md @e-skora
+/PRODUCT.md @e-skora
+/ARCHITECTURE.md @e-skora
+/DECISIONS.md @e-skora
+/DESIGN.md @e-skora
+
+# Workflows.
+/.github/workflows/ @e-skora
+
+# The proposal and spec of every change, which only Elias ratifies or rewrites.
+/changes/**/proposal.md @e-skora
+/changes/**/spec.md @e-skora

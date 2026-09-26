@@ -1,0 +1,45 @@
+# The second, cheaper code review on every pull request, run through the code-review plugin.
+#
+# Uses anthropics/claude-code-action@v1. Docs: https://code.claude.com/docs/en/github-actions
+# and, for the plugin invocation itself, https://code.claude.com/docs/en/code-review
+# Auth: the same claude_code_oauth_token as the other workflows, minted with
+# `claude setup-token` on the Claude Max subscription, not an API key.
+#
+# Builder note: the research note behind this file (verified 2026-09-26) describes the
+# invocation as `/code-review:code-review --comment` run through claude-code-action. Verify
+# the exact plugin name and flags against https://code.claude.com/docs/en/code-review on day
+# one; the shape below is written to be correct in spirit, not copied from a working example.
+
+name: Claude review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run the code review plugin
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Run /code-review:code-review --comment against this pull request.
+
+            Review the diff against the spec.md of the change folder it implements
+            (changes/NNN-slug/spec.md, matched from the PR title "[build] NNN-slug") and
+            against the checklist in AGENTS.md section 6. Post findings as inline PR comments
+            in the shape AGENTS.md section 6 describes: one finding per comment, severity,
+            file and line, what is wrong, REPRODUCED or REASONED, and a suggested fix. Do not
+            approve or merge the pull request.

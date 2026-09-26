@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Dependency consistency check
+        run: uv run pip check
+
+      - name: Test
+        run: uv run pytest -q
+
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether the demo app exists yet
+        id: demo_exists
+        run: |
+          if [ -f demo/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: hashFiles('demo/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install demo dependencies
+        if: hashFiles('demo/package.json') != ''
+        working-directory: demo
+        run: npm ci
+
+      - name: Test demo app
+        if: hashFiles('demo/package.json') != ''
+        working-directory: demo
+        run: npm test
+
+      - name: Build demo app
+        if: hashFiles('demo/package.json') != ''
+        working-directory: demo
+        run: npm run build
+
+      - name: Skip notice
+        if: hashFiles('demo/package.json') == ''
+        run: echo "demo/package.json does not exist yet; skipping the demo job's steps."
+
+  private-identifiers:
+    runs-on: ubuntu-latest
+    env:
+      PRIVATE_DENYLIST: ${{ secrets.PRIVATE_DENYLIST }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Run the private identifier gate
+        run: uv run pytest tests/test_no_private_identifiers.py -q
