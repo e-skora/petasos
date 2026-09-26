@@ -89,3 +89,22 @@ Format: `D-NNN | status | date | decision | why | alternatives rejected`.
 - Status: PROPOSED (details in DESIGN.md)
 - Decision: light theme only; trust tiers are a semantic palette (grey L1 to L3, amber L4, crimson L5) and tier is never conveyed by hue alone; crimson means only "L5 stakes or failure"; the pending-approvals pill is chrome on every screen, never hidden in a menu; a refusal is never rendered as "nothing waiting"; every label is plain language.
 - Why: these rules are what make the safety model legible to a non-engineer in two minutes, and each one closed a real bug in Talaria.
+
+## D-015 Builds merge without Elias
+- Status: RATIFIED by Elias 2026-09-26 ("i need the merging to happen without me, id ont have time to merge every single build")
+- Decision: no human merges a build. `main` is protected with required checks and zero required human reviews. A deterministic **merge gate** (a scheduled GitHub Actions workflow, every 15 minutes, a script with no model in it) squash-merges an open, non-draft `[build] NNN-slug` pull request when all of these hold on the PR's current head commit: the CI jobs `python`, `demo`, `private-identifiers` are green; the Claude review and the Codex review have each posted on that head commit and neither contains a `blocker`; `changes/NNN-slug/report.md` exists with `Verdict: BUILT` and no placeholders; the PR body carries the wall-check output. Anything else waits, and a PR that has waited through two builder runs with an unresolved blocker is repaired by the builder's next run (queue-recovery rule). Planning PRs (doc set, specs) are merged by Claude from the Mac after the reviewer's pass; Elias merges nothing. Releases (deploy workflows) stay a separate hand-started act, a few clicks per project, not per build.
+- Why: Elias's time is the scarce resource; the gate replaces his click with checks a script can verify. Parsing the two reviews' comments removes the unproven question of whether a bot review counts as a formal GitHub approval.
+- Supersedes: the "Elias merges in week one, auto-merge in week two" clause of D-006 and the week-one wording in D-007.
+- Rejected: requiring a formal approving review from a bot (unverified behavior); GitHub's built-in auto-merge alone (it cannot read the review comments or the report).
+
+## D-016 The v1 release promise
+- Status: RATIFIED by Elias 2026-09-26 ("otherwise yes to everything", answering the recommendation in `review/2026-09-26-plan-review-claude-response.md`)
+- Decision: the v1 promise is one complete journey: an AI proposes a refund, a person approves exactly that refund, the system executes only what was approved and records it. The canary demonstration is second. Changes 007 (explain) and 008 (intent gate) leave v1. Storage is one SQLite file with clear module boundaries so a fake effect, the grant transition, and the ledger row commit in one transaction. A grant authorizes one immutable action record (validated arguments, destination, amount and currency where relevant, resource version, proposer, policy version), never a risk description alone.
+- Why: the plan review's first two findings (unbound arguments, non-atomic execution) and its schedule finding.
+- Supersedes: D-001's module list where it conflicts; D-011's stretch list; ARCHITECTURE.md section 6 (three files).
+
+## D-017 Visitor sessions instead of static public tokens
+- Status: RATIFIED by Elias 2026-09-26 ("otherwise yes to everything")
+- Decision: the public demo mints a visitor session on request (three tokens for the three roles, its own data namespace, one-hour life); the README publishes the one-line command that mints one, not fixed tokens. Global abuse ceilings stay on top of per-session quotas. The public owner token is documented as a simulation role, not proof of a human.
+- Why: shared quotas let two visitors exhaust the refund demo for everyone; shared data let one visitor approve another's work.
+- Supersedes: D-010's "three demo tokens published in the README" clause.
