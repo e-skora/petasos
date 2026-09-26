@@ -30,7 +30,7 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Dependency consistency check
-        run: uv run pip check
+        run: uv pip check
 
       - name: Test
         run: uv run pytest -q
@@ -89,5 +89,14 @@ jobs:
       - name: Sync dependencies
         run: uv sync
 
+      - name: Refuse to pass when the denylist is missing
+        # A skipped scan must never look like a passed scan. Secrets are not available to
+        # pull requests from forks; this repository accepts no fork pull requests.
+        run: |
+          if [ -z "$PRIVATE_DENYLIST" ]; then
+            echo "PRIVATE_DENYLIST secret is missing or empty; the private identifier gate did not run."
+            exit 1
+          fi
+
       - name: Run the private identifier gate
-        run: uv run pytest tests/test_no_private_identifiers.py -q
+        run: uv run pytest tests/test_no_private_identifiers.py -q -rs

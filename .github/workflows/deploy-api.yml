@@ -1,19 +1,18 @@
-# Deploys the API and MCP server to Fly.io on every push to main that touches the app's own
-# files. Flags and action versions must be verified against current vendor docs before the
+# Deploys the API and MCP server to Fly.io when Elias starts a release by hand.
+# Flags and action versions must be verified against current vendor docs before the
 # first real run: https://fly.io/docs/flyctl/deploy/ and
 # https://github.com/superfly/flyctl-actions
 
 name: Deploy API
 
+# Release is a separate decision from merge (review finding 8, 2026-09-26): this workflow runs
+# only when Elias starts it by hand and names the commit to release. It never runs on push.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "fly.toml"
-      - "Dockerfile"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "The exact commit or tag to release (must have a green CI run)"
+        required: true
 
 concurrency:
   group: deploy-api-${{ github.ref }}
@@ -24,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master

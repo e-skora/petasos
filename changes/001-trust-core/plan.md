@@ -1,8 +1,8 @@
 # Plan: 001-trust-core
 
-grounded_at: `<merge commit of 000-bootstrap>` (fill in at claim time: this change cannot be
-claimed until 000-bootstrap has merged to `main`, since it needs the package skeleton,
-`pyproject.toml`, and CI already in place)
+grounded_at: (set by the planning thread when this change is ratified, to the `main` commit
+that contains the merged 000-bootstrap; the builder checks it and never fills it in. This
+change cannot be claimed until 000-bootstrap has merged.)
 
 lane: claude
 

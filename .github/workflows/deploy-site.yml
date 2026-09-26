@@ -1,16 +1,18 @@
 # Builds the demo app, folds it into the static site, and deploys the site to Cloudflare
-# Pages on every push to main that touches the site or the demo app. Flags and action
+# Pages when Elias starts a release by hand. Flags and action
 # versions must be verified against current vendor docs before the first real run:
 # https://developers.cloudflare.com/pages/ and https://github.com/cloudflare/wrangler-action
 
 name: Deploy site
 
+# Release is a separate decision from merge (review finding 8, 2026-09-26): this workflow runs
+# only when Elias starts it by hand and names the commit to release. It never runs on push.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "site/**"
-      - "demo/**"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "The exact commit or tag to release (must have a green CI run)"
+        required: true
 
 concurrency:
   group: deploy-site-${{ github.ref }}
@@ -21,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
