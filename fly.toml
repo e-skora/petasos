@@ -1,0 +1,27 @@
+# Fly.io app config for petasos-api (ARCHITECTURE.md section 7, D-004).
+# Checked against https://fly.io/docs/reference/configuration/ on 2026-09-26.
+# Deploys are started by hand (D-015); this file is inert scaffolding until change 005.
+
+app = "petasos-api"
+primary_region = "iad"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/healthz"
+    protocol = "http"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

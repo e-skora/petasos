@@ -12,14 +12,14 @@ completes it.
 - [x] Write `src/petasos/app.py` and `src/petasos/mcp/` per spec 0.7, with
       `tests/test_app_*.py` covering acceptance tests 9 to 13.
       Check: `uv run pytest tests -q -k app` passes.
-- [ ] Write `Dockerfile` that installs the project with `uv` and runs uvicorn against
+- [x] Write `Dockerfile` that installs the project with `uv` and runs uvicorn against
       `petasos.app:create_app --factory`.
       Check: the file exists and names that entrypoint (not built in CI for this change).
-- [ ] Write `fly.toml` for app `petasos-api`, `auto_stop_machines = false`, an HTTP health
+- [x] Write `fly.toml` for app `petasos-api`, `auto_stop_machines = false`, an HTTP health
       check against `/healthz`.
       Check: `uv run python -c "import tomllib; tomllib.load(open('fly.toml','rb'))"` parses
       without error, and the file contains `auto_stop_machines = false` and a `/healthz` path.
-- [ ] Write `docs/setup.md` in the three parts plan.md step 7 describes.
+- [x] Write `docs/setup.md` in the three parts plan.md step 7 describes.
       Check: a fresh reader with no other context can follow part 2 top to bottom with no
       missing step, and every vendor step cites a URL.
 - [ ] Confirm the full CI workflow passes on the claim branch: `python` (sync, ruff check,
