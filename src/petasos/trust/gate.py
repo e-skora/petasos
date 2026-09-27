@@ -68,19 +68,23 @@ class Gate:
 
         tier = derive_tier(definition.profile)
         verb = verb_for(definition.profile)
-        record = ActionRecord(
-            tool=tool,
-            arguments=validated,
-            destination=resolved.destination,
-            amount_minor=resolved.amount_minor,
-            currency=resolved.currency,
-            resource=resolved.resource,
-            resource_version=resolved.resource_version,
-            proposer=proposer,
-            policy_version=POLICY_VERSION,
-            scope=self._scope,
-        )
-        record_hash_value = compute_record_hash(record)
+        try:
+            record = ActionRecord(
+                tool=tool,
+                arguments=validated,
+                destination=resolved.destination,
+                amount_minor=resolved.amount_minor,
+                currency=resolved.currency,
+                resource=resolved.resource,
+                resource_version=resolved.resource_version,
+                proposer=proposer,
+                policy_version=POLICY_VERSION,
+                scope=self._scope,
+            )
+            record_hash_value = compute_record_hash(record)
+        except Exception:  # noqa: BLE001 - a malformed record fails closed (spec 1.19)
+            self._log_refusal("invalid_arguments", proposer, now)
+            return make_result("refused/invalid_arguments")
 
         if tier in (Tier.L4, Tier.L5):
             return self.grants.stage(

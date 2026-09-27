@@ -55,6 +55,13 @@ Changed files:
 - tests/test_trust_risk.py
 - tests/test_trust_scope.py
 - changes/001-trust-core/report.md (this file)
+
+Repair (2026-09-27): merged `origin/main` (PR #13, `.github/**` and
+`tests/test_merge_gate.py` only, no conflict with this change's wall) to clear the
+"branch is behind main" reason, and fixed the Claude review blocker below. Local
+suite re-run at the repair commit: 257 passed / 0 failed, 1 skipped, same skip as
+before. `uv run ruff check .` and `uv run ruff format --check .` and `uv pip check`
+all still pass clean.
 Deviations from spec: none. `tests/test_trust_helpers.py` matches the
 `tests/test_trust_*.py` wall pattern but defines no `test_*` function itself; it holds
 the fake refund, email, note, and delete tools that plan.md asks tests to define
@@ -64,5 +71,37 @@ Dependencies changed: none; `uv sync --locked` resolved the pins already recorde
 `pyproject.toml` and `uv.lock` without modifying either. `uv pip check`: all 44
 installed packages are compatible.
 Flags: none
-Review findings and disposition: none yet; this section is filled in after review.
+Review findings and disposition:
+- Claude review of commit e82e3b96d78bccbf69b48911d48308d4d8f4f54b:
+  - blocker | src/petasos/trust/gate.py:71-83 | `ActionRecord` construction and
+    `record_hash` computation ran outside the fail-closed try/except that wraps
+    `validate`/`resolve`, so a resolved result with a float anywhere in its arguments,
+    or with only one of `amount_minor`/`currency` set, raised an uncaught exception
+    out of `Gate.propose` instead of `refused/invalid_arguments`, with no ledger row:
+    fixed in this repair commit by moving both calls inside the same fail-closed
+    try/except, with a new test,
+    `test_resolved_money_missing_currency_is_refused_and_ledger_records_it` in
+    `tests/test_trust_gate.py`, that reproduces the reported case (a resolved result
+    with `amount_minor` set and `currency` left `None`) and checks both the result
+    code and that exactly one `refused` ledger row is written.
+  - should-fix | src/petasos/trust/grants.py:169 | `GrantStore.stage()` never calls
+    `sweep()`, unlike every other public entry point: accepted, not fixed here. This
+    is a should-fix, not a blocker, and is currently harmless because `GRANT_TTL`
+    (24h) exceeds `RAIL_WINDOW` (1h), so a grant cannot be both expired and still
+    inside the rail's counting window; left as a real gap for a follow-up change if
+    either constant changes.
+  - nit | src/petasos/trust/outcomes.py:46 | `Result` carries no field for the stored
+    outcome code on an `already_executed` retry: accepted, not fixed here; no
+    acceptance test in the spec requires it.
+  - nit | src/petasos/trust/executor.py:240 | `run_direct` does not re-check
+    `current_version` before running the effect, unlike the grant path: accepted, not
+    fixed here; the window is narrow (propose to run_direct is one call) and no
+    acceptance test requires the check.
+- Codex review (P2, non-blocking; none reached the P0/P1 badge the merge gate treats
+  as blocking) of commits 560eb8468d4fa80201a661e4e0c2ac60803373d9 and
+  e82e3b96d78bccbf69b48911d48308d4d8f4f54b: raised the same `grants.py` sweep gap as
+  the should-fix above, plus three ledger-chain findings (row id not bound into the
+  hash, malformed `detail_json` raising instead of returning the row id, and deletion
+  of the final row going undetected) and the same `executor.py` outcome-code gap as
+  the nit above: accepted, not fixed here for the same reasons; none is a blocker.
 Open questions appended to QUESTIONS.md: none

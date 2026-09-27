@@ -261,3 +261,24 @@ BROKEN_TOOL = ToolDefinition(
     effect=record_note,
     current_version=ticket_version,
 )
+
+
+def resolve_mismatched_money(conn: sqlite3.Connection, validated: dict) -> Resolved:
+    _customer, version = _resolve_ticket(conn, validated["ticket"])
+    return Resolved(
+        destination=None,
+        amount_minor=100,
+        currency=None,
+        resource=f"ticket:{validated['ticket']}",
+        resource_version=version,
+    )
+
+
+MISMATCHED_MONEY_TOOL = ToolDefinition(
+    name="mismatched_money_tool",
+    profile=RiskProfile(mutation="internal", reversible=True, touches_money=False, deletes=False),
+    validate=lambda args: args,
+    resolve=resolve_mismatched_money,
+    effect=record_note,
+    current_version=ticket_version,
+)

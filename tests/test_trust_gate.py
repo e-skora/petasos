@@ -10,6 +10,7 @@ from pathlib import Path
 from test_trust_helpers import (
     BROKEN_TOOL,
     EMAIL_TOOL,
+    MISMATCHED_MONEY_TOOL,
     NOTE_TOOL,
     REFUND_TOOL,
     make_fake_db,
@@ -167,3 +168,24 @@ def test_resolve_raising_any_exception_is_refused(tmp_sqlite: Path, frozen_clock
     gate = _gate(db, frozen_clock)
     result = gate.propose("broken_tool", {"ticket": 1, "body": "x"}, proposer="agent")
     assert result.code == "refused/invalid_arguments"
+
+
+def test_resolved_money_missing_currency_is_refused_and_ledger_records_it(
+    tmp_sqlite: Path, frozen_clock
+) -> None:
+    db = make_fake_db(tmp_sqlite)
+    seed_ticket(db, 1, version=1, customer="cust-1")
+    registry = ToolRegistry([MISMATCHED_MONEY_TOOL])
+    gate = Gate(db, registry, approvers=frozenset({"owner"}), scope="s1", clock=frozen_clock)
+
+    result = gate.propose("mismatched_money_tool", {"ticket": 1}, proposer="agent")
+    assert result.code == "refused/invalid_arguments"
+
+    conn = db.connect()
+    try:
+        rows = conn.execute("SELECT kind, detail_json FROM ledger").fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "refused"
+    assert "invalid_arguments" in rows[0]["detail_json"]
