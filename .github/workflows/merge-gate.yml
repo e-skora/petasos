@@ -22,6 +22,17 @@
 name: Merge gate
 
 on:
+  # After every completed CI or Claude review run, so a builder pull request is judged as soon
+  # as its evidence lands. workflow_run always runs the workflow file on the default branch
+  # (docs: events-that-trigger-workflows, workflow_run, read 2026-09-27), so a pull request
+  # cannot substitute its own copy of the gate. pull_request_review is deliberately NOT used:
+  # that event runs the workflow file from the pull request's merge commit with write
+  # permissions, which would let a pull request run its own gate.
+  workflow_run:
+    workflows: ["CI", "Claude review"]
+    types: [completed]
+  # Backstop only: GitHub delays schedule events under load and may drop them (same page).
+  # On 2026-09-27 this cron fired once in eight hours.
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
@@ -45,7 +56,8 @@ concurrency:
 jobs:
   gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The gate may wait up to MERGE_GATE_CODEX_WAIT_SECONDS for Codex's answer in one run.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,4 +69,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MERGE_GATE_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          MERGE_GATE_CODEX_WAIT_SECONDS: "600"
+          MERGE_GATE_CODEX_POLL_SECONDS: "30"
         run: python .github/scripts/merge_gate.py
