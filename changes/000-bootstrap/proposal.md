@@ -1,6 +1,6 @@
 # Proposal: 000-bootstrap
 
-status: ratified
+status: merged
 lane: claude
 depends_on: none
 decisions: D-003, D-005, D-006, D-007, D-012
