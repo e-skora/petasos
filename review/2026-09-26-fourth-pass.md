@@ -95,6 +95,16 @@ This is separate from the passing checks on the proposed planning head. The revi
 files are authored on `review/fourth-pass-2026-09-26` from that main commit; no product,
 implementation, workflow, or decision file is changed by this review.
 
+Publication note: [review PR #6](https://github.com/e-skora/petasos/pull/6) uses the
+older main files. Its first CI run also flagged formatting in the new evidence examples;
+those examples were then formatted, and both review documents pass the local format
+check. The remaining local format failures are the three unchanged files already
+reported by main CI: the 000 and 001 specifications and the private-identifier test.
+The PR's old Claude review workflow also failed to install its code-review plugin,
+before reviewing anything. These publication-check failures are separate from the
+passing checks on the reviewed planning head. The review branch does not change those
+out-of-scope files.
+
 ## Where I am guessing
 
 The remaining finding reproduces the validator output and the gate message using

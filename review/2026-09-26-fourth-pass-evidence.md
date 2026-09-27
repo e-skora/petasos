@@ -207,7 +207,12 @@ def make_patch(before, after):
 
 injected_patch = make_patch("- [ ] Write x\n", "- [x] Write x\n++ New unapproved instruction\n")
 files = [f for f in t.default_files() if f.path != t.TASKS_PATH] + [
-    g.FileChange(t.TASKS_PATH, "modified", before="- [ ] Write x\n", after="- [x] Write x\n++ New unapproved instruction\n")
+    g.FileChange(
+        t.TASKS_PATH,
+        "modified",
+        before="- [ ] Write x\n",
+        after="- [x] Write x\n++ New unapproved instruction\n",
+    )
 ]
 print("Actual task hunk:", repr(injected_patch))
 check("old bypass: extra task text hidden as diff header", t.ready_facts(files=files), False)
@@ -215,7 +220,15 @@ question_patch = make_patch("-- Existing question\nKeep this\n", "Keep this\nNew
 check(
     "old bypass: existing question deletion hidden as diff header",
     t.ready_facts(
-        files=t.default_files() + [g.FileChange(g.QUESTIONS_PATH, "modified", before="-- Existing question\nKeep this\n", after="Keep this\nNew question\n")]
+        files=t.default_files()
+        + [
+            g.FileChange(
+                g.QUESTIONS_PATH,
+                "modified",
+                before="-- Existing question\nKeep this\n",
+                after="Keep this\nNew question\n",
+            )
+        ]
     ),
     False,
 )
@@ -418,10 +431,11 @@ import subprocess
 import sys
 
 root = Path.cwd()
-spec = importlib.util.spec_from_file_location('gate_tests', root / 'tests/test_merge_gate.py')
+spec = importlib.util.spec_from_file_location("gate_tests", root / "tests/test_merge_gate.py")
 t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
 g = t.merge_gate
+
 
 class Collected(t.FakeGitHubForGatherShapes):
     def __init__(self):
@@ -430,12 +444,19 @@ class Collected(t.FakeGitHubForGatherShapes):
         self.base = t.MAIN_SHA
 
     def request(self, method, path, body=None):
-        assert method == 'GET' and path == '/pulls/1'
-        return {'changed_files': 2}
+        assert method == "GET" and path == "/pulls/1"
+        return {"changed_files": 2}
 
     def paged(self, path, key=None, limit_pages=30):
-        if path == '/pulls/1/reviews':
-            return [dict(user={'login': 'chatgpt-codex-connector[bot]'}, state='COMMENTED', body='Clean', commit_id=t.SHA)]
+        if path == "/pulls/1/reviews":
+            return [
+                dict(
+                    user={"login": "chatgpt-codex-connector[bot]"},
+                    state="COMMENTED",
+                    body="Clean",
+                    commit_id=t.SHA,
+                )
+            ]
         return super().paged(path, key, limit_pages)
 
     def latest_run(self, path, sha):
@@ -443,64 +464,92 @@ class Collected(t.FakeGitHubForGatherShapes):
 
     def compare_files(self, base, head):
         if (base, head) == (t.MAIN_SHA, t.SHA):
-            return {'merge_base_commit': {'sha': self.base}}, []
+            return {"merge_base_commit": {"sha": self.base}}, []
         return super().compare_files(base, head)
 
+
 pr = t.open_pr_dict()
-pr['body'] = t.BODY_TEXT
+pr["body"] = t.BODY_TEXT
 for label, mutation, expected in (
-    ('whole-file collection positive control', None, True),
-    ('whole-file collection rejects extra task instruction', (t.TASKS_PATH, t.TASKS_AFTER + '++ New instruction\n'), False),
-    ('whole-file collection rejects question replacement', (g.QUESTIONS_PATH, 'Replacement\n'), False),
-    ('whole-file collection rejects missing head content', (t.TASKS_PATH, None), False),
+    ("whole-file collection positive control", None, True),
+    (
+        "whole-file collection rejects extra task instruction",
+        (t.TASKS_PATH, t.TASKS_AFTER + "++ New instruction\n"),
+        False,
+    ),
+    (
+        "whole-file collection rejects question replacement",
+        (g.QUESTIONS_PATH, "Replacement\n"),
+        False,
+    ),
+    ("whole-file collection rejects missing head content", (t.TASKS_PATH, None), False),
 ):
     api = Collected()
     if mutation:
         path, content = mutation
         api.contents[path, t.SHA] = content
-    facts = g.gather(api, pr, t.MAIN_SHA, frozenset({'000-bootstrap'}))
+    facts = g.gather(api, pr, t.MAIN_SHA, frozenset({"000-bootstrap"}))
     verdict = g.evaluate(facts)
     assert verdict.ready is expected
     for path in (t.TASKS_PATH, g.QUESTIONS_PATH):
         assert (path, t.MAIN_SHA) in api.file_at_calls
         assert (path, t.SHA) in api.file_at_calls
-    print(f'{label}: ready={verdict.ready}; reasons={verdict.reasons}')
+    print(f"{label}: ready={verdict.ready}; reasons={verdict.reasons}")
 
 for base in (t.OLD_SHA, None):
     api = Collected()
     api.base = base
-    facts = g.gather(api, pr, t.MAIN_SHA, frozenset({'000-bootstrap'}))
+    facts = g.gather(api, pr, t.MAIN_SHA, frozenset({"000-bootstrap"}))
     verdict = g.evaluate(facts)
     assert not verdict.ready
-    print(f'collected merge base {base}: behind_main={facts.behind_main}; reasons={verdict.reasons}')
+    print(
+        f"collected merge base {base}: behind_main={facts.behind_main}; reasons={verdict.reasons}"
+    )
 
-workflow = (root / '.github/workflows/claude-review.yml').read_text()
-validator = workflow.split("          python3 - <<'PY'\n", 1)[1].split('          PY', 1)[0]
-validator = '\n'.join(line[10:] for line in validator.splitlines())
-url = 'https://github.com/example/project/actions/runs/77'
+workflow = (root / ".github/workflows/claude-review.yml").read_text()
+validator = workflow.split("          python3 - <<'PY'\n", 1)[1].split("          PY", 1)[0]
+validator = "\n".join(line[10:] for line in validator.splitlines())
+url = "https://github.com/example/project/actions/runs/77"
 for label, result in (
-    ('completed with blocker', dict(commit=t.SHA, completed=True, blockers=1, findings=[dict(severity='blocker', location='sample.py:1', summary='Example defect')])),
-    ('explicitly incomplete', dict(commit=t.SHA, completed=False, blockers=0, findings=[])),
-    ('wrong commit', dict(commit=t.OLD_SHA, completed=True, blockers=0, findings=[])),
-    ('missing structured output', None),
+    (
+        "completed with blocker",
+        dict(
+            commit=t.SHA,
+            completed=True,
+            blockers=1,
+            findings=[dict(severity="blocker", location="sample.py:1", summary="Example defect")],
+        ),
+    ),
+    ("explicitly incomplete", dict(commit=t.SHA, completed=False, blockers=0, findings=[])),
+    ("wrong commit", dict(commit=t.OLD_SHA, completed=True, blockers=0, findings=[])),
+    ("missing structured output", None),
 ):
-    proc = subprocess.run([sys.executable, '-c', validator], capture_output=True, text=True,
-        env={'RESULT': json.dumps(result) if result is not None else '', 'HEAD_SHA': t.SHA})
+    proc = subprocess.run(
+        [sys.executable, "-c", validator],
+        capture_output=True,
+        text=True,
+        env={"RESULT": json.dumps(result) if result is not None else "", "HEAD_SHA": t.SHA},
+    )
     assert proc.returncode != 0
-    evidence = replace(t.ready_facts().claude_review, jobs={'review': 'failure'}, url=url,
-        steps={'review': {g.REVIEW_MODEL_STEP: 'success', g.REVIEW_CHECK_STEP: 'failure'}})
+    evidence = replace(
+        t.ready_facts().claude_review,
+        jobs={"review": "failure"},
+        url=url,
+        steps={"review": {g.REVIEW_MODEL_STEP: "success", g.REVIEW_CHECK_STEP: "failure"}},
+    )
     verdict = g.evaluate(t.ready_facts(claude_review=evidence))
     assert not verdict.ready
-    assert 'completed and found a problem' in verdict.reasons[0]
+    assert "completed and found a problem" in verdict.reasons[0]
     assert url in verdict.reasons[0]
-    print(f'{label}: validator={proc.stderr.strip()!r}; gate={verdict.reasons[0]!r}')
+    print(f"{label}: validator={proc.stderr.strip()!r}; gate={verdict.reasons[0]!r}")
 
-evidence = replace(evidence, steps={'review': {g.REVIEW_MODEL_STEP: 'failure', g.REVIEW_CHECK_STEP: 'failure'}})
+evidence = replace(
+    evidence, steps={"review": {g.REVIEW_MODEL_STEP: "failure", g.REVIEW_CHECK_STEP: "failure"}}
+)
 reason = g.claude_review_failure_reason(evidence)
-assert 'did not complete' in reason and url in reason
-print(f'failed model step: {reason}')
-print('All boundary probes completed offline. No remote writes.')
-
+assert "did not complete" in reason and url in reason
+print(f"failed model step: {reason}")
+print("All boundary probes completed offline. No remote writes.")
 ```
 
 ### Observed output
