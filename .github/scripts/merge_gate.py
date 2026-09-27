@@ -32,8 +32,10 @@ A builder pull request merges only when ALL of these hold on its current head co
    `success`. That job fails unless the model returned a completed review of H with zero
    blockers (it checks the model's structured result in a separate script step), so a
    comment, a skipped run, or a failed run never counts. When it fails, the status comment
-   says which step failed (the model step: the review did not complete; the check step: the
-   review completed and found a problem) and links the run.
+   links the run and says "completed and found a problem" only when the model step and the
+   check step passed and the blockers step failed (a valid, completed review of H with a
+   blocker); any other shape is "did not complete or was invalid", which the builder never
+   repairs (fourth-pass review, finding 1).
 6. Codex review: Codex posted a pull request review whose commit is H, or reacted with a
    thumbs-up to the gate's own request comment naming H. None of its findings on H is a
    blocker (`blocker`, `P0`, `P1`), and it did not request changes on H.
@@ -67,9 +69,11 @@ CI_WORKFLOW = ".github/workflows/ci.yml"
 REVIEW_WORKFLOW = ".github/workflows/claude-review.yml"
 REVIEW_JOB = "review"
 # Step names inside the review job, as written in claude-review.yml. The model step runs the
-# review; the check step fails when the structured result is incomplete or has a blocker.
+# review; the check step fails when the structured result is missing, incomplete, or
+# inconsistent; the blockers step runs after a passing check and fails when a blocker exists.
 REVIEW_MODEL_STEP = "Review the head commit"
 REVIEW_CHECK_STEP = "Check the review result (no model)"
+REVIEW_BLOCKERS_STEP = "Require zero blockers (no model)"
 CODEX_LOGINS = frozenset({"chatgpt-codex-connector[bot]"})
 GATE_LOGIN = "github-actions[bot]"
 HOLD_LABEL = "hold"
@@ -289,26 +293,34 @@ def is_blocker_text(text: str) -> bool:
 
 
 def claude_review_failure_reason(cr: WorkflowEvidence) -> str:
-    """Why a non-passing review job fails, in words the builder can act on (finding 3).
+    """Why a non-passing review job fails, in words the builder can act on (third-pass
+    finding 3, fourth-pass finding 1).
 
-    The review job has two steps. If the model step passed and the check step failed, the
-    review completed and its structured result had a blocker or was inconsistent: the
-    findings are the `severity | location | summary` lines in that step's log and the inline
-    comments on the pull request. Anything else (the model step failed, was cancelled, or
-    never ran: authentication, timeout, a skipped job) is an incomplete review, not a finding.
+    The review job has three steps after checkout. The model step runs the review. The check
+    step fails when the structured result is missing, names another commit, says the review
+    did not complete, or has a blocker count that does not match its findings: an invalid or
+    incomplete review, nothing to repair. The blockers step runs only after the check step
+    passed and fails exactly when the completed, valid review of this commit has a blocker:
+    the repair case, with the findings printed as `severity | location | summary` lines in
+    that step's log and as inline comments on the pull request. Only the full chain (model
+    passed, check passed, blockers failed) is reported as a finding; every other shape
+    (authentication, timeout, cancelled, skipped, invalid output) is "did not complete".
     """
     state = cr.jobs.get(REVIEW_JOB) or "missing"
     steps = cr.steps.get(REVIEW_JOB, {})
     where = f" (run {cr.url})" if cr.url else ""
-    model, check = steps.get(REVIEW_MODEL_STEP), steps.get(REVIEW_CHECK_STEP)
-    if model == "success" and check == "failure":
+    model = steps.get(REVIEW_MODEL_STEP)
+    check = steps.get(REVIEW_CHECK_STEP)
+    blockers = steps.get(REVIEW_BLOCKERS_STEP)
+    if model == "success" and check == "success" and blockers == "failure":
         return (
             "the Claude review of the head commit completed and found a problem: read the "
-            f"`{REVIEW_CHECK_STEP}` step's log and the inline comments{where}"
+            f"`{REVIEW_BLOCKERS_STEP}` step's log and the inline comments{where}"
         )
     return (
-        f"the Claude review of the head commit did not complete (job `{state}`, model step "
-        f"`{model or 'missing'}`); nothing to repair from it until a run completes{where}"
+        f"the Claude review of the head commit did not complete or was invalid (job `{state}`, "
+        f"model step `{model or 'missing'}`, check step `{check or 'missing'}`); nothing to "
+        f"repair from it until a run completes{where}"
     )
 
 

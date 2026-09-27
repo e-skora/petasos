@@ -11,7 +11,9 @@ blocks below, no files written, no real clock.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -356,23 +358,25 @@ def test_claude_review_job_not_success(conclusion):
 
 MODEL_STEP = merge_gate.REVIEW_MODEL_STEP
 CHECK_STEP = merge_gate.REVIEW_CHECK_STEP
+BLOCKERS_STEP = merge_gate.REVIEW_BLOCKERS_STEP
 RUN_URL = "https://github.com/x/y/actions/runs/77"
 
 
 def test_claude_review_completed_with_blocker_says_so_and_links_the_run():
     """Third-pass finding 3: a completed review that found a blocker is a repair case; the
-    builder is told where the findings are."""
+    builder is told where the findings are. Only the full chain counts: model passed, check
+    passed (valid, completed, right commit), blockers step failed."""
     cr = replace(
         ready_facts().claude_review,
         jobs={"review": "failure"},
         url=RUN_URL,
-        steps={"review": {MODEL_STEP: "success", CHECK_STEP: "failure"}},
+        steps={"review": {MODEL_STEP: "success", CHECK_STEP: "success", BLOCKERS_STEP: "failure"}},
     )
     verdict = evaluate(ready_facts(claude_review=cr))
     assert not verdict.ready
     (reason,) = [r for r in verdict.reasons if "Claude review" in r]
     assert "completed and found a problem" in reason
-    assert CHECK_STEP in reason
+    assert BLOCKERS_STEP in reason
     assert RUN_URL in reason
     assert "did not complete" not in reason
 
@@ -384,6 +388,15 @@ def test_claude_review_completed_with_blocker_says_so_and_links_the_run():
         {MODEL_STEP: "cancelled", CHECK_STEP: "failure"},  # timeout
         {MODEL_STEP: "", CHECK_STEP: ""},  # still running
         {},  # no step detail at all
+        # Fourth-pass finding 1: the model step passed but its result was unusable
+        # (completed=false, wrong commit, missing output, count mismatch): the check step
+        # fails and the blockers step never runs. Not a finding, not a repair case.
+        {MODEL_STEP: "success", CHECK_STEP: "failure", BLOCKERS_STEP: "skipped"},
+        {MODEL_STEP: "success", CHECK_STEP: "failure"},
+        {MODEL_STEP: "success", CHECK_STEP: "skipped", BLOCKERS_STEP: "skipped"},
+        {MODEL_STEP: "success", CHECK_STEP: "success", BLOCKERS_STEP: "skipped"},
+        {MODEL_STEP: "success", CHECK_STEP: "success", BLOCKERS_STEP: "cancelled"},
+        {MODEL_STEP: "success", CHECK_STEP: "success"},
     ],
 )
 def test_claude_review_not_completed_is_not_a_finding(steps):
@@ -1191,7 +1204,8 @@ class FakeGitHubForRuns(merge_gate.GitHub):
                     "steps": [
                         {"name": "Set up job", "conclusion": "success"},
                         {"name": MODEL_STEP, "conclusion": "success"},
-                        {"name": CHECK_STEP, "conclusion": "failure"},
+                        {"name": CHECK_STEP, "conclusion": "success"},
+                        {"name": BLOCKERS_STEP, "conclusion": "failure"},
                     ],
                 }
             ]
@@ -1203,6 +1217,105 @@ def test_latest_run_carries_the_run_url_and_step_conclusions():
     assert evidence.url == RUN_URL
     assert evidence.jobs == {"review": "failure"}
     assert evidence.steps["review"][MODEL_STEP] == "success"
-    assert evidence.steps["review"][CHECK_STEP] == "failure"
+    assert evidence.steps["review"][CHECK_STEP] == "success"
+    assert evidence.steps["review"][BLOCKERS_STEP] == "failure"
     reason = merge_gate.claude_review_failure_reason(evidence)
     assert "completed and found a problem" in reason and RUN_URL in reason
+
+
+# ---------------------------------------------------------------------------------------------
+# The review workflow's own script steps, executed with synthetic model output (no model,
+# no workflow run). Pins the step names the gate reads and the split the gate relies on.
+# ---------------------------------------------------------------------------------------------
+
+REVIEW_WORKFLOW_PATH = MODULE_PATH.parents[1] / "workflows/claude-review.yml"
+
+
+def review_step_scripts() -> dict[str, str]:
+    """Each `name:` step's embedded `python3 - <<'PY'` body, de-indented, keyed by step name."""
+    text = REVIEW_WORKFLOW_PATH.read_text()
+    scripts: dict[str, str] = {}
+    for block in text.split("      - name: ")[1:]:
+        name = block.split("\n", 1)[0].strip()
+        if "python3 - <<'PY'\n" not in block:
+            continue
+        body = block.split("python3 - <<'PY'\n", 1)[1].split("          PY", 1)[0]
+        scripts[name] = "\n".join(line[10:] for line in body.splitlines())
+    return scripts
+
+
+def run_review_step(name: str, raw: str | None, head_sha: str) -> tuple[int, str]:
+    """Run one script step with RESULT=raw (unset when None) and HEAD_SHA=head_sha."""
+    env = {"HEAD_SHA": head_sha}
+    if raw is not None:
+        env["RESULT"] = raw
+    proc = subprocess.run(
+        [sys.executable, "-c", review_step_scripts()[name]],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def clean_result(**overrides) -> str:
+    result = {"commit": SHA, "completed": True, "blockers": 0, "findings": []}
+    result.update(overrides)
+    return json.dumps(result)
+
+
+BLOCKER_FINDING = {"severity": "blocker", "location": "sample.py:1", "summary": "Problem"}
+
+
+def test_review_workflow_has_the_step_names_the_gate_reads():
+    text = REVIEW_WORKFLOW_PATH.read_text()
+    for name in (MODEL_STEP, CHECK_STEP, BLOCKERS_STEP):
+        assert f"      - name: {name}\n" in text
+    scripts = review_step_scripts()
+    assert set(scripts) == {CHECK_STEP, BLOCKERS_STEP}
+    # The check step runs even after a failed model step; the blockers step does not.
+    check_block = text.split(f"      - name: {CHECK_STEP}\n", 1)[1].split("      - name: ", 1)[0]
+    assert "if: always()" in check_block
+    blockers_block = text.split(f"      - name: {BLOCKERS_STEP}\n", 1)[1]
+    assert "if:" not in blockers_block.split("run:", 1)[0]
+
+
+def test_review_check_step_passes_a_valid_completed_result_even_with_blockers():
+    code, out = run_review_step(CHECK_STEP, clean_result(), SHA)
+    assert code == 0, out
+    code, out = run_review_step(
+        CHECK_STEP, clean_result(blockers=1, findings=[BLOCKER_FINDING]), SHA
+    )
+    assert code == 0, out
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,  # no structured output at all
+        "{not json",
+        clean_result(completed=False),  # fourth-pass finding 1
+        clean_result(commit=OLD_SHA),  # wrong commit
+        clean_result(blockers=0, findings=[BLOCKER_FINDING]),  # count mismatch
+        clean_result(blockers=2, findings=[BLOCKER_FINDING]),
+    ],
+)
+def test_review_check_step_fails_an_invalid_or_incomplete_result(raw):
+    code, out = run_review_step(CHECK_STEP, raw, SHA)
+    assert code != 0
+    assert "blocker(s) found" not in out  # never reported as a finding
+
+
+def test_review_blockers_step_fails_only_when_a_blocker_exists():
+    code, out = run_review_step(BLOCKERS_STEP, clean_result(), SHA)
+    assert code == 0, out
+    should_fix = {"severity": "should-fix", "location": "a.py:1", "summary": "Minor"}
+    code, out = run_review_step(BLOCKERS_STEP, clean_result(findings=[should_fix]), SHA)
+    assert code == 0, out
+    code, out = run_review_step(
+        BLOCKERS_STEP, clean_result(blockers=1, findings=[BLOCKER_FINDING]), SHA
+    )
+    assert code != 0
+    assert "blocker | sample.py:1 | Problem" in out
+    assert "1 blocker(s) found" in out

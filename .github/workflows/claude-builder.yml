@@ -78,14 +78,15 @@ jobs:
                "the branch is behind `main`; merge `main` into it".
                Waiting only for a review that has not arrived, for authorization, or for a
                dependency is NOT a repair case. Neither is "the Claude review of the head
-               commit did not complete": that run failed before reviewing (for example
-               authentication or a timeout), so there is no finding to act on; leave it.
+               commit did not complete or was invalid": that run failed before reviewing
+               (authentication, a timeout) or returned an unusable result, so there is no
+               finding to act on; leave it.
                To repair: check out its branch. For "behind `main`", run
                `git merge origin/main` (never rebase; never force-push) and resolve conflicts
                inside your wall only. For a Claude review problem, read the findings first:
                the status comment links the review run; run
                `gh run view <run id> --log-failed` and read the "severity | location | summary"
-               lines printed by the "Check the review result (no model)" step, plus the
+               lines printed by the "Require zero blockers (no model)" step, plus the
                inline comments on the pull request. Otherwise fix exactly the cause.
                Commit with a subject starting "repair: ", update report.md's "Review findings
                and disposition" (each finding: fixed in <sha> | refuted because ...), push,
