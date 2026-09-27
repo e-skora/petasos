@@ -29,71 +29,152 @@ from pathlib import Path
 from unittest.mock import patch
 
 root = Path.cwd()
-spec = importlib.util.spec_from_file_location('gate_tests', root / 'tests/test_merge_gate.py')
+spec = importlib.util.spec_from_file_location("gate_tests", root / "tests/test_merge_gate.py")
 t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
 g = t.merge_gate
 
+
 def show(label, facts):
     v = g.evaluate(facts)
-    print(f'{label}: ready={v.ready}, reasons={v.reasons}')
+    print(f"{label}: ready={v.ready}, reasons={v.reasons}")
     assert v.ready
 
-show('late reaction from old review', t.ready_facts(reviews=[g.Review(t.CODEX_LOGIN, 'COMMENTED', 'Old review', t.OLD_SHA)], reactions=[g.Reaction(t.CODEX_LOGIN, '+1', '2026-09-26T10:05:00Z')]))
-show('conflicting Claude summaries', t.ready_facts(issue_comments=t.ready_facts().issue_comments + [g.Comment(t.CLAUDE_LOGIN, f'Petasos review: claude\nCommit: {t.SHA}\nBlockers: 1\nblocker | file:1 | unresolved')]))
-show('builder-shaped Claude summary without reviewer run', t.ready_facts())
-show('questions file may be replaced or deleted', t.ready_facts(changed_files=t.DEFAULT_CHANGED_FILES + ['changes/QUESTIONS.md']))
-show('plan-specific prohibition ignored', t.ready_facts(plan_text=t.DEFAULT_PLAN_TEXT + '\nwall_forbidden:\n- `src/petasos/trust/grants.py`\n'))
+
+show(
+    "late reaction from old review",
+    t.ready_facts(
+        reviews=[g.Review(t.CODEX_LOGIN, "COMMENTED", "Old review", t.OLD_SHA)],
+        reactions=[g.Reaction(t.CODEX_LOGIN, "+1", "2026-09-26T10:05:00Z")],
+    ),
+)
+show(
+    "conflicting Claude summaries",
+    t.ready_facts(
+        issue_comments=t.ready_facts().issue_comments
+        + [
+            g.Comment(
+                t.CLAUDE_LOGIN,
+                f"Petasos review: claude\nCommit: {t.SHA}\nBlockers: 1\nblocker | file:1 | unresolved",
+            )
+        ]
+    ),
+)
+show("builder-shaped Claude summary without reviewer run", t.ready_facts())
+show(
+    "questions file may be replaced or deleted",
+    t.ready_facts(changed_files=t.DEFAULT_CHANGED_FILES + ["changes/QUESTIONS.md"]),
+)
+show(
+    "plan-specific prohibition ignored",
+    t.ready_facts(
+        plan_text=t.DEFAULT_PLAN_TEXT + "\nwall_forbidden:\n- `src/petasos/trust/grants.py`\n"
+    ),
+)
+
 
 class FakeGitHub:
-    repo = 'example/project'
+    repo = "example/project"
     reads = []
+
     def paged(self, path, key=None):
-        if path.endswith('/check-runs'):
-            return [dict(id=i, name=n, conclusion='success', status='completed', started_at='2026-09-26T10:00:00Z', app={'slug': 'untrusted-check-app'}) for i, n in enumerate(g.REQUIRED_CHECKS)]
-        if path.endswith('/files'):
-            return [dict(filename='src/petasos/trust/copied_review.md', previous_filename='review/trusted-review.md', status='renamed')]
-        if path.startswith('/issues/') and path.endswith('/comments'):
-            return [dict(user={'login': t.CLAUDE_LOGIN}, body=t.ready_facts().issue_comments[0].body)]
-        if path.endswith('/reviews'):
-            return [dict(user={'login': t.CODEX_LOGIN}, state='COMMENTED', body='Looks fine.', commit_id=t.SHA)]
+        if path.endswith("/check-runs"):
+            return [
+                dict(
+                    id=i,
+                    name=n,
+                    conclusion="success",
+                    status="completed",
+                    started_at="2026-09-26T10:00:00Z",
+                    app={"slug": "untrusted-check-app"},
+                )
+                for i, n in enumerate(g.REQUIRED_CHECKS)
+            ]
+        if path.endswith("/files"):
+            return [
+                dict(
+                    filename="src/petasos/trust/copied_review.md",
+                    previous_filename="review/trusted-review.md",
+                    status="renamed",
+                )
+            ]
+        if path.startswith("/issues/") and path.endswith("/comments"):
+            return [
+                dict(user={"login": t.CLAUDE_LOGIN}, body=t.ready_facts().issue_comments[0].body)
+            ]
+        if path.endswith("/reviews"):
+            return [
+                dict(
+                    user={"login": t.CODEX_LOGIN},
+                    state="COMMENTED",
+                    body="Looks fine.",
+                    commit_id=t.SHA,
+                )
+            ]
         return []
+
     def file_at(self, path, ref):
         self.reads.append((path, ref))
-        if path.endswith('/plan.md'):
+        if path.endswith("/plan.md"):
             return t.DEFAULT_PLAN_TEXT
-        if path.endswith('/report.md'):
+        if path.endswith("/report.md"):
             return t.ready_facts().report_text
         raise AssertionError(path)
 
-pr = dict(number=1, title='[build] 001-trust-core', draft=False, base={'ref': 'main'}, head={'sha':t.SHA, 'ref':'build/001-trust-core', 'repo':{'full_name':'example/project'}}, labels=[], body='## Wall check\nPASS')
+
+pr = dict(
+    number=1,
+    title="[build] 001-trust-core",
+    draft=False,
+    base={"ref": "main"},
+    head={"sha": t.SHA, "ref": "build/001-trust-core", "repo": {"full_name": "example/project"}},
+    labels=[],
+    body="## Wall check\nPASS",
+)
 api = FakeGitHub()
 facts = g.gather(api, pr)
-show('rename removes protected review file; foreign check app accepted', facts)
-assert 'review/trusted-review.md' not in facts.changed_files
-assert not any(path.endswith('/proposal.md') for path, ref in api.reads)
-print('eligibility: gather never reads proposal status, dependencies, or grounded commit')
+show("rename removes protected review file; foreign check app accepted", facts)
+assert "review/trusted-review.md" not in facts.changed_files
+assert not any(path.endswith("/proposal.md") for path, ref in api.reads)
+print("eligibility: gather never reads proposal status, dependencies, or grounded commit")
+
 
 class MergeAPI:
     calls = []
-    def __init__(self, *a): pass
-    def paged(self, path): return [pr]
+
+    def __init__(self, *a):
+        pass
+
+    def paged(self, path):
+        return [pr]
+
     def request(self, method, path, body=None):
-        self.calls.append((method,path,body))
-        if path.endswith('/merge'):
-            return {'merged':False, 'message':'not merged'}
+        self.calls.append((method, path, body))
+        if path.endswith("/merge"):
+            return {"merged": False, "message": "not merged"}
         return {}
 
-with patch.object(g,'GitHub',MergeAPI), patch.object(g,'gather',return_value=t.ready_facts()), patch.dict(os.environ, {'GITHUB_TOKEN':'local-fixture','GITHUB_REPOSITORY':'example/project','MERGE_GATE_DRY_RUN':''}):
-    with patch.object(g,'summary') as output:
-        g.main()
-    assert any(method=='DELETE' for method,path,body in MergeAPI.calls)
-    assert any('merged at head' in line for line in output.call_args.args[0])
-    assert MergeAPI.calls[0][2]['sha'] == t.SHA
-    print('merge response merged=false: still reports merged and deletes branch')
-    print('positive control: merge request carries evaluated head SHA')
-print('All probes completed offline. No GitHub writes were performed.')
 
+with (
+    patch.object(g, "GitHub", MergeAPI),
+    patch.object(g, "gather", return_value=t.ready_facts()),
+    patch.dict(
+        os.environ,
+        {
+            "GITHUB_TOKEN": "local-fixture",
+            "GITHUB_REPOSITORY": "example/project",
+            "MERGE_GATE_DRY_RUN": "",
+        },
+    ),
+):
+    with patch.object(g, "summary") as output:
+        g.main()
+    assert any(method == "DELETE" for method, path, body in MergeAPI.calls)
+    assert any("merged at head" in line for line in output.call_args.args[0])
+    assert MergeAPI.calls[0][2]["sha"] == t.SHA
+    print("merge response merged=false: still reports merged and deletes branch")
+    print("positive control: merge request carries evaluated head SHA")
+print("All probes completed offline. No GitHub writes were performed.")
 ```
 
 ## Observed output
