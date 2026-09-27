@@ -1,6 +1,6 @@
 # Proposal: 001-trust-core
 
-status: ratified
+status: merged
 lane: claude
 depends_on: 000-bootstrap
 decisions: D-003, D-009, D-013, D-016
