@@ -27,6 +27,6 @@ completes it.
       yet), `private-identifiers` (skips locally, wired for the CI secret).
       Check: the GitHub Actions run for the PR shows all three jobs green (or gracefully
       skipped for `demo`).
-- [ ] Write `changes/000-bootstrap/report.md` per AGENTS.md section 5, recording the exact
+- [x] Write `changes/000-bootstrap/report.md` per AGENTS.md section 5, recording the exact
       installed dependency versions and the `uv pip check` result.
       Check: `grep -nE '<!--|TODO|TBD|\[fill' changes/000-bootstrap/report.md` returns nothing.
