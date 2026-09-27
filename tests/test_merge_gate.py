@@ -977,19 +977,51 @@ class FakeGitHubForMain:
         return []
 
 
-def run_main(fake, facts, dry_run=False):
-    env = {"GITHUB_TOKEN": "token", "GITHUB_REPOSITORY": "x/y"}
+class FakeTime:
+    """A clock that only moves when the gate sleeps: no real waiting in tests."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def clock(self) -> float:
+        return self.now
+
+
+def run_main(fake, facts, dry_run=False, wait_seconds="0", gather_side_effect=None):
+    """Run main() against a fake GitHub. `facts` is what gather() returns; a list gives one
+    return per call (the last repeats). The Codex wait is off unless wait_seconds says
+    otherwise, and time is faked either way."""
+    env = {
+        "GITHUB_TOKEN": "token",
+        "GITHUB_REPOSITORY": "x/y",
+        "MERGE_GATE_CODEX_WAIT_SECONDS": wait_seconds,
+        "MERGE_GATE_CODEX_POLL_SECONDS": "30",
+    }
     if dry_run:
         env["MERGE_GATE_DRY_RUN"] = "true"
     captured: list[str] = []
+    ft = FakeTime()
+    sequence = list(facts) if isinstance(facts, list) else [facts]
+
+    def fake_gather(*args, **kwargs):
+        return sequence.pop(0) if len(sequence) > 1 else sequence[0]
+
     with patch.dict(os.environ, env, clear=False):
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
         with (
             patch.object(merge_gate, "GitHub", return_value=fake),
-            patch.object(merge_gate, "gather", return_value=facts),
+            patch.object(merge_gate, "gather", side_effect=gather_side_effect or fake_gather),
             patch.object(merge_gate, "summary", side_effect=captured.extend),
+            patch.object(merge_gate, "_sleep", ft.sleep),
+            patch.object(merge_gate, "_clock", ft.clock),
         ):
             merge_gate.main()
+    run_main.last_time = ft
     return captured
 
 
@@ -1036,6 +1068,109 @@ def test_main_dry_run_does_not_merge_or_delete():
     run_main(fake, ready_facts(), dry_run=True)
     assert not any(c[0] == "PUT" for c in fake.calls)
     assert not any(c[0] == "DELETE" for c in fake.calls)
+
+
+# ---------------------------------------------------------------------------------------------
+# Waiting for Codex inside the run (no event fires when a bot posts a review)
+# ---------------------------------------------------------------------------------------------
+
+
+def codex_request_posted(fake) -> bool:
+    return any(
+        c[0] == "POST"
+        and c[1] == "/issues/1/comments"
+        and (c[2] or {}).get("body") == codex_request_body(SHA)
+        for c in fake.calls
+    )
+
+
+def test_main_waits_for_codex_and_merges_in_the_same_run():
+    """The gate asks Codex, keeps polling, sees the review land, re-evaluates, and merges."""
+    fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
+    lines = run_main(
+        fake,
+        [ready_facts(reviews=[]), ready_facts(reviews=[]), ready_facts()],
+        wait_seconds="600",
+    )
+    assert codex_request_posted(fake)
+    assert run_main.last_time.sleeps == [30, 30]  # two polls, then Codex was there
+    assert any(c[0] == "PUT" for c in fake.calls)
+    assert any("Codex answered" in line for line in lines)
+    assert any("merged as" in line for line in lines)
+
+
+def test_main_gives_up_waiting_at_the_budget_and_updates_the_status():
+    fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
+    lines = run_main(fake, ready_facts(reviews=[]), wait_seconds="90")
+    assert codex_request_posted(fake)
+    assert run_main.last_time.sleeps == [30, 30, 30]
+    assert not any(c[0] == "PUT" for c in fake.calls)
+    assert any("no Codex answer within 90 seconds" in line for line in lines)
+    assert any("no Codex review for the head commit" in line for line in lines)
+    # The status comment was written twice: before the wait and after it.
+    statuses = [
+        c
+        for c in fake.calls
+        if c[0] == "POST"
+        and c[1] == "/issues/1/comments"
+        and STATUS_MARKER in (c[2] or {}).get("body", "")
+    ]
+    assert len(statuses) >= 1
+
+
+def test_main_does_not_wait_when_the_budget_is_zero():
+    fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
+    run_main(fake, ready_facts(reviews=[]), wait_seconds="0")
+    assert codex_request_posted(fake)
+    assert run_main.last_time.sleeps == []
+    assert not any(c[0] == "PUT" for c in fake.calls)
+
+
+def test_main_does_not_wait_when_codex_was_not_asked():
+    """No request means no wait: for example CI is red, so Codex is not asked yet."""
+    fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
+    ci = replace(ready_facts().ci, jobs={"python": "failure", "demo": "success"})
+    run_main(fake, ready_facts(reviews=[], ci=ci), wait_seconds="600")
+    assert not codex_request_posted(fake)
+    assert run_main.last_time.sleeps == []
+
+
+def test_main_wait_never_merges_when_codex_answers_with_a_blocker():
+    fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
+    blocked = ready_facts(
+        reviews=[Review("chatgpt-codex-connector[bot]", "COMMENTED", "P1 bad", SHA)]
+    )
+    lines = run_main(fake, [ready_facts(reviews=[]), blocked], wait_seconds="600")
+    assert run_main.last_time.sleeps == [30]
+    assert not any(c[0] == "PUT" for c in fake.calls)
+    assert any("is a blocker" in line for line in lines)
+
+
+def test_wait_for_codex_stops_at_thumbs_up_on_the_request():
+    ft = FakeTime()
+    seq = [ready_facts(reviews=[]), ready_facts(reviews=[], codex_thumbs_on_request=True)]
+    with patch.object(merge_gate, "gather", side_effect=lambda *a, **k: seq.pop(0)):
+        facts = merge_gate.wait_for_codex(
+            None, {}, MAIN_SHA, frozenset(), ready_facts(reviews=[]), 600, 30, ft.sleep, ft.clock
+        )
+    assert facts.codex_thumbs_on_request
+    assert ft.sleeps == [30, 30]
+
+
+def test_wait_for_codex_failure_inside_the_wait_leaves_the_pr_waiting():
+    fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
+    seq = [ready_facts(reviews=[])]
+
+    def gather_then_raise(*a, **k):
+        if seq:
+            return seq.pop(0)
+        raise OSError("network down")
+
+    lines = run_main(
+        fake, ready_facts(reviews=[]), wait_seconds="600", gather_side_effect=gather_then_raise
+    )
+    assert not any(c[0] == "PUT" for c in fake.calls)
+    assert any("the wait failed" in line for line in lines)
 
 
 # ---------------------------------------------------------------------------------------------

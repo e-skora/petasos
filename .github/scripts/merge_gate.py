@@ -51,6 +51,13 @@ A builder pull request merges only when ALL of these hold on its current head co
 Anything else waits. The reasons go into one status comment on the pull request, which the
 builder reads when it repairs. The merge sends H's sha, so a push between check and merge
 makes GitHub refuse it, and cleanup runs only after GitHub says the merge happened.
+
+When the gate runs: after every completed `CI` or `Claude review` workflow run (the
+`workflow_run` event, which always runs the copy of this gate on `main`), on a schedule as
+a backstop (GitHub delays and drops schedule events; on 2026-09-27 the 15-minute cron fired
+once in eight hours), and by hand. When the gate asks Codex for a review, it stays in the
+same run and polls for Codex's answer for up to MERGE_GATE_CODEX_WAIT_SECONDS (default 600),
+because nothing on GitHub starts a run when a bot posts a review.
 """
 
 from __future__ import annotations
@@ -480,6 +487,53 @@ def status_body(verdict: Verdict, sha: str) -> str:
     return "\n".join(lines)
 
 
+def has_codex_evidence(facts: PullFacts) -> bool:
+    return facts.codex_thumbs_on_request or any(
+        r.author in CODEX_LOGINS and r.commit_id == facts.head_sha for r in facts.reviews
+    )
+
+
+def wait_for_codex(
+    gh: GitHub,
+    pr: dict,
+    main_sha: str,
+    merged: frozenset[str],
+    facts: PullFacts,
+    budget_seconds: float,
+    poll_seconds: float,
+    sleep=None,
+    clock=None,
+) -> PullFacts:
+    """After the gate asks Codex, stay in this run until Codex answers or the budget is spent.
+
+    Codex answers a request comment minutes later, and nothing on GitHub starts a workflow
+    run when it does (a review from a bot is not an event this gate may safely run on, and
+    the schedule event is unreliable). So the run that asked keeps polling, re-reading the
+    pull request each time, and returns the newest facts. The caller re-evaluates them.
+    """
+    sleep = sleep or _sleep
+    clock = clock or _clock
+    deadline = clock() + budget_seconds
+    while clock() < deadline:
+        sleep(poll_seconds)
+        facts = gather(gh, pr, main_sha, merged)
+        if has_codex_evidence(facts):
+            break
+    return facts
+
+
+def _sleep(seconds: float) -> None:
+    import time
+
+    time.sleep(seconds)
+
+
+def _clock() -> float:
+    import time
+
+    return time.monotonic()
+
+
 # ---------------------------------------------------------------------------------------------
 # GitHub plumbing. Everything below only fetches facts or performs the merge.
 # ---------------------------------------------------------------------------------------------
@@ -685,6 +739,8 @@ def main() -> int:
     token = os.environ["GITHUB_TOKEN"]
     repo = os.environ["GITHUB_REPOSITORY"]
     dry_run = os.environ.get("MERGE_GATE_DRY_RUN", "") == "true"
+    codex_budget = float(os.environ.get("MERGE_GATE_CODEX_WAIT_SECONDS", "600"))
+    codex_poll = float(os.environ.get("MERGE_GATE_CODEX_POLL_SECONDS", "30"))
     gh = GitHub(token, repo)
 
     pulls = gh.paged("/pulls?state=open&base=main&sort=created&direction=asc")
@@ -707,11 +763,7 @@ def main() -> int:
         except Exception as err:  # noqa: BLE001 (fail closed: an error means this PR waits)
             lines.append(f"- #{pr['number']} waits: the gate could not read it ({err!r}).")
             continue
-        if not verdict.ready:
-            lines.append(f"- #{facts.number} `{facts.title}` waits:")
-            lines.extend(f"  - {r}" for r in verdict.reasons)
-            if dry_run:
-                continue
+        if not verdict.ready and not dry_run:
             try:
                 post_status(gh, facts.number, status_body(verdict, facts.head_sha))
                 bodies = [c.get("body") or "" for c in gh.paged(f"/issues/{facts.number}/comments")]
@@ -721,9 +773,24 @@ def main() -> int:
                         f"/issues/{facts.number}/comments",
                         {"body": codex_request_body(facts.head_sha)},
                     )
-                    lines.append("  - asked Codex to review the head commit.")
-            except urllib.error.HTTPError as err:
-                lines.append(f"  - writing the status or the Codex request failed ({err.code}).")
+                    lines.append(f"- #{facts.number}: asked Codex to review the head commit.")
+                    if codex_budget > 0:
+                        facts = wait_for_codex(
+                            gh, pr, main_sha, merged_set, facts, codex_budget, codex_poll
+                        )
+                        verdict = evaluate(facts)
+                        lines.append(
+                            "  - Codex answered; re-evaluated."
+                            if has_codex_evidence(facts)
+                            else f"  - no Codex answer within {codex_budget:.0f} seconds."
+                        )
+                        if not verdict.ready:
+                            post_status(gh, facts.number, status_body(verdict, facts.head_sha))
+            except Exception as err:  # noqa: BLE001 (fail closed: this PR waits)
+                lines.append(f"  - the status, the Codex request, or the wait failed ({err!r}).")
+        if not verdict.ready:
+            lines.append(f"- #{facts.number} `{facts.title}` waits:")
+            lines.extend(f"  - {r}" for r in verdict.reasons)
             continue
         if merged_one:
             lines.append(f"- #{facts.number} is ready; it merges on the next run (one per run).")
