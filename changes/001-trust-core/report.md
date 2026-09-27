@@ -17,17 +17,15 @@ caller-supplied text; `Ledger(db).verify()` names the first row a hand edit brea
 `scope` argument threads through every grant, rail slot, and ledger row so one
 visitor's owner can never see or act on another visitor's work. There is still no
 HTTP, no MCP, and no real help-desk tool: those are change 003 and later.
-Commit: 4d78b2c773631aa5736990b573fcbe842d81e209 on branch build/001-trust-core (the
-report's own commit lands after this one; see the pull request's head commit for the
-exact sha a reader is looking at, since a report cannot correctly name the hash of the
-commit that contains it).
-Tests: local count 249 passed / 0 failed, 1 skipped (the private-identifier gate,
-which only runs where the `PRIVATE_DENYLIST` secret is set) at commit
-4d78b2c773631aa5736990b573fcbe842d81e209. `uv run ruff check .` and
-`uv run ruff format --check .` both pass clean at the same commit. CI run: not yet
-available at the time this report was written; GitHub Actions only runs on a pull
-request or a push to `main` (`.github/workflows/ci.yml`), so the first real run starts
-when this pull request opens. CI is the merge gate (D-013), never this report's
+Commit: this report is committed on branch build/001-trust-core; see the pull
+request's head commit for the exact sha (a report cannot correctly name the hash of
+the commit that contains it).
+Tests: CI run https://github.com/e-skora/petasos/actions/runs/36317602305 (`python`,
+`demo`, `private-identifiers` all succeeded) on pull request #14's opening commit,
+560eb8468d4fa80201a661e4e0c2ac60803373d9. Local count 249 passed / 0 failed, 1 skipped
+(the private-identifier gate, which only runs where the `PRIVATE_DENYLIST` secret is
+set) at the same commit. `uv run ruff check .` and `uv run ruff format --check .` both
+pass clean at the same commit. CI is the merge gate (D-013), never this report's
 advisory count.
 Changed files:
 - changes/001-trust-core/tasks.md
