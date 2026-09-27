@@ -8,3 +8,12 @@ Append-only for agents. Elias answers by deleting the entry (and adding a decisi
 2. **Demo app placement.** Proposal: the demo app is part of the petasos.io site (`petasos.io/demo`), calling `api.petasos.io`. Alternative: `app.petasos.io` as its own Pages project. One project is simpler.
 3. **Codex's role.** Proposal: reviewer on every PR plus builder for the two stretch changes (007, 008), kicked off by you from chatgpt.com/codex with a one-line prompt I will write. Alternative: Codex reviews only. The first keeps both agents visibly in the build story.
 4. **Auto-merge timing.** Proposal: you click merge for every PR in week one; auto-merge goes on in week two if no PR needed a human fix. Alternative: auto-merge from day one behind the two-review rule.
+
+## 2026-09-26 (Cowork planning thread): status of the four questions above
+
+These are recorded here so no builder reopens them. Only question 2 is still open.
+
+1. Settled: the repository is public `e-skora/petasos`, cloned at `~/code/Petasos` (D-005).
+2. Still open, needed by change 004 or 005: where the demo app is served (`petasos.io/demo` or `app.petasos.io`). No change before 004 depends on it.
+3. Settled: Codex reviews every builder pull request (D-006, D-015). Changes 007 and 008, the stretch builds proposed for Codex, are out of v1 (D-016).
+4. Settled and superseded: no human merges builds; the merge gate does (D-015).
