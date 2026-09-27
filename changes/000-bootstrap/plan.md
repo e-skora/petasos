@@ -14,7 +14,6 @@ wall_expected:
 - `tests/test_smoke.py`
 - `tests/test_app_*.py`
 - `docs/setup.md`
-- `uv.lock`
 - `fly.toml`
 - `Dockerfile`
 - `changes/000-bootstrap/tasks.md` (ticking boxes only)
@@ -33,8 +32,8 @@ The merge gate enforces this list mechanically from the copy of this file on `ma
 1. `src/petasos/__init__.py`: a package that sets `__version__ = "0.1.0"` and nothing else.
 2. `tests/test_smoke.py`: imports `petasos`, asserts `petasos.__version__` is a non-empty
    string.
-3. Run `uv sync` so `uv.lock` is generated and committed. From the next change onward CI
-   installs with `uv sync --locked`, so the lockfile must be committed here.
+3. Run `uv sync --locked` against the committed `uv.lock`. Do not regenerate or edit the
+   lockfile; if it does not install, stop and flag with the exact error.
 4. `src/petasos/app.py` and `src/petasos/mcp/`: `create_app(tokens)` with `/healthz`, the
    identity middleware, and the MCP server with the one `ping` tool (spec 0.7). Read the
    installed `mcp` package's own documentation and source for the 2.x server class, the
@@ -68,6 +67,6 @@ The merge gate enforces this list mechanically from the copy of this file on `ma
 ## Stop-and-flag conditions specific to this change
 
 In addition to AGENTS.md section 3: if any dependency pin already recorded in `pyproject.toml`
-cannot be resolved by `uv sync` (removed from PyPI, yanked since the pin was written, or
+cannot be installed by `uv sync --locked` (removed from PyPI, yanked since the pin was written, or
 incompatible with Python 3.12), stop, do not silently swap in a different version, and flag
 it with the exact error in `report.md`.

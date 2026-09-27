@@ -19,7 +19,7 @@ Every change's `plan.md` lists `wall_expected` (paths you may change) and `wall_
 git diff --name-only origin/main...HEAD
 ```
 
-If any path is outside `wall_expected` or matches `wall_forbidden`, stop, revert that path, and say so in your report. Your own change's `tasks.md` (ticking boxes) and `report.md` are always allowed, whether or not the plan lists them. Standing-forbidden for every automated run, regardless of any plan: `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DESIGN.md`, `changes/**/proposal.md`, `changes/**/spec.md`, `changes/**/plan.md`, `changes/QUESTIONS.md` (append-only exception below), `.github/**` (workflows and the merge gate), `tests/test_no_private_identifiers.py`, `tests/test_merge_gate.py`, `review/**`. The merge gate checks this list and the plan's `wall_expected` itself, from the copy on `main`, before it merges anything.
+If any path is outside `wall_expected` or matches `wall_forbidden`, stop, revert that path, and say so in your report. Your own change's `tasks.md` (ticking boxes) and `report.md` are always allowed, whether or not the plan lists them. Standing-forbidden for every automated run, regardless of any plan: `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `PRODUCT.md`, `ARCHITECTURE.md`, `DESIGN.md`, `changes/**/proposal.md`, `changes/**/spec.md`, `changes/**/plan.md`, `changes/QUESTIONS.md` (append-only exception below), `pyproject.toml`, `uv.lock`, `.github/**` (workflows and the merge gate), `tests/test_no_private_identifiers.py`, `tests/test_merge_gate.py`, `review/**`. The merge gate checks this list, the plan's `wall_expected` and `wall_forbidden`, both sides of every rename, tick-only edits to `tasks.md`, and append-only edits to `changes/QUESTIONS.md` itself, from the copy on `main`, before it merges anything. It also checks that the proposal is ratified, its dependencies are merged, and `main` has not moved in the wall since `grounded_at`.
 
 ## 2. How work moves
 
@@ -59,7 +59,7 @@ Never improvise past a flag. A draft PR with an honest flag is a good outcome.
 - **Fail closed.** Timeouts, exceptions, missing configuration, unparseable input: the restrictive outcome, never the permissive one.
 - **Additive by default.** Do not rename or delete public functions, routes, or tables unless the spec says so.
 - **Prose rules for anything a human reads** (README, docstrings, UI copy, reports): plain language; define a term the first time; no em dashes (use a comma, a colon, or a period); no operation names or ids in UI copy.
-- **Exact pins.** Any dependency change runs `pip check` and is called out in the report.
+- **Exact pins.** `pyproject.toml` and `uv.lock` change only through a planning pull request. A task that needs a new or different dependency is a stop-and-flag.
 - **Commits**: imperative subject under 72 characters, body says what and why. One logical change per commit where practical.
 
 ## 5. Return report shape (`changes/NNN-slug/report.md`)
@@ -72,7 +72,7 @@ Commit: <sha> on branch build/NNN-slug
 Tests: CI run <link>; local count <n passed / n failed> at <sha> (advisory)
 Changed files: full list
 Deviations from spec: none | list, each with why
-Dependencies changed: none | list with versions and pip check result
+Dependencies changed: none (a needed change is a flag, not an edit); `uv pip check` result
 Flags: none | list
 Review findings and disposition: filled in AFTER review, each finding: fixed in <sha> | refuted because ... | accepted and owed as change NNN
 Open questions appended to QUESTIONS.md: none | list
@@ -110,7 +110,7 @@ Approve only when there are no blockers. A should-fix does not block approval bu
 ## 8. Local commands
 
 ```
-uv sync
+uv sync --locked
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
 cd demo && npm ci && npm test

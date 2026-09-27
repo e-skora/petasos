@@ -4,26 +4,37 @@ DECISIONS.md D-015. No model runs here. The scheduled workflow `.github/workflow
 calls `main()`. Everything that decides is in `evaluate()`, a pure function over facts fetched
 from the GitHub REST API, so `tests/test_merge_gate.py` can test every rule without a network.
 
-A builder pull request merges only when ALL of these hold on its current head commit:
+Version 2 (2026-09-26) answers the second-pass review (`review/2026-09-26-second-pass.md`,
+findings 1, 2, 4, 5, 8, 11). Evidence now comes only from channels the builder cannot write:
+workflow runs of trusted workflow files, Codex's own review objects, and files on `main`.
 
-1. Title is `[build] NNN-slug`, head branch is `build/NNN-slug` in this repository, base is
-   `main`, it is not a draft, and it has no `hold` label.
-2. The CI jobs `python`, `demo`, and `private-identifiers` each finished with `success`.
-3. The Claude review posted a summary comment for this exact commit that says `Blockers: 0`,
-   and none of its inline comments on this commit is a blocker.
-4. The Codex review posted on this exact commit (a review, or a thumbs-up reaction made after
-   this commit's CI started) and none of its findings on this commit is a blocker.
-5. `changes/NNN-slug/report.md` at this commit says `Verdict: BUILT` and has no placeholders.
-6. The pull request body has a `## Wall check` section (the builder's own check).
-7. The gate's own wall check passes: every changed file matches the change's `wall_expected`
-   list, read from `plan.md` on `main` (trusted), and none is standing-forbidden.
+A builder pull request merges only when ALL of these hold on its current head commit H:
 
-What counts as a blocker (fail closed): a finding line whose severity is `blocker` (the
-AGENTS.md section 6 shape), or a Codex `P0` or `P1` badge, or a review whose state is
-`CHANGES_REQUESTED`. Anything else waits and the reasons are written to the run summary.
+1. Shape: title `[build] NNN-slug`, head branch `build/NNN-slug` in this repository, base
+   `main`, not a draft, no `hold` label.
+2. Authorized: on `main`, the change's proposal says `status: ratified`; every change in its
+   `depends_on` has a merged `[build]` pull request; its plan names a `grounded_at` commit that
+   `main` contains; and `main` has not changed any file in the change's wall since then.
+3. Current: `main` has not changed any file this pull request touches, or any file in its
+   wall, since the branch was cut. Otherwise the builder updates the branch first.
+4. CI: the latest `CI` workflow run (`.github/workflows/ci.yml`, event `pull_request`) for H
+   has jobs `python`, `demo`, and `private-identifiers`, each `success`.
+5. Claude review: the latest `Claude review` workflow run for H has its `review` job at
+   `success`. That job fails unless the model returned a completed review of H with zero
+   blockers (it checks the model's structured result in a separate script step), so a
+   comment, a skipped run, or a failed run never counts.
+6. Codex review: Codex posted a pull request review whose commit is H, or reacted with a
+   thumbs-up to the gate's own request comment naming H. None of its findings on H is a
+   blocker (`blocker`, `P0`, `P1`), and it did not request changes on H.
+7. Report: `changes/NNN-slug/report.md` at H says exactly `Verdict: BUILT`, no placeholders.
+8. Wall: the file list is complete; every changed path, and the old path of every rename,
+   is inside `wall_expected`, outside the plan's `wall_forbidden`, and not standing-forbidden;
+   `tasks.md` changes only tick boxes; `changes/QUESTIONS.md` only gains lines.
+9. The pull request body has a `## Wall check` section.
 
-The merge uses the head commit's sha, so a push that lands between the check and the merge
-makes GitHub refuse it. One pull request merges per run; the next run sees the new `main`.
+Anything else waits. The reasons go into one status comment on the pull request, which the
+builder reads when it repairs. The merge sends H's sha, so a push between check and merge
+makes GitHub refuse it, and cleanup runs only after GitHub says the merge happened.
 """
 
 from __future__ import annotations
@@ -37,17 +48,25 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-REQUIRED_CHECKS = ("python", "demo", "private-identifiers")
-CLAUDE_LOGINS = frozenset({"claude[bot]"})
+REQUIRED_CI_JOBS = ("python", "demo", "private-identifiers")
+CI_WORKFLOW = ".github/workflows/ci.yml"
+REVIEW_WORKFLOW = ".github/workflows/claude-review.yml"
+REVIEW_JOB = "review"
 CODEX_LOGINS = frozenset({"chatgpt-codex-connector[bot]"})
+GATE_LOGIN = "github-actions[bot]"
 HOLD_LABEL = "hold"
+STATUS_MARKER = "<!-- petasos-merge-gate -->"
+MAX_FILES = 3000
+MAX_COMPARE_FILES = 300
 
 TITLE_RE = re.compile(r"^\[build\] (?P<change>\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*)$")
+CHANGE_RE = re.compile(r"\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*")
 VERDICT_RE = re.compile(r"(?m)^Verdict:\s*BUILT\s*$")
 PLACEHOLDER_RE = re.compile(r"<!--|TODO|TBD|\[fill")
 WALL_SECTION_RE = re.compile(r"(?mi)^##\s*Wall check\s*$")
-SUMMARY_HEAD_RE = re.compile(r"(?m)^Petasos review: claude\s*$")
-BLOCKERS_ZERO_RE = re.compile(r"(?m)^Blockers:\s*0\s*$")
+RATIFIED_RE = re.compile(r"(?m)^status:\s*ratified\s*$")
+DEPENDS_RE = re.compile(r"(?m)^depends_on:\s*(?P<deps>.*)$")
+GROUNDED_RE = re.compile(r"(?m)^grounded_at:\s*`?(?P<sha>[0-9a-f]{7,40})`?")
 # A finding is a blocker when its severity field says so. The AGENTS.md shape starts the line
 # with the severity; markdown decoration (bold, backticks, brackets, list bullets) is allowed.
 BLOCKER_LINE_RE = re.compile(r"(?im)^[\s>*_`\[\-]*blocker[\s*_`\]]*(\||:|-|$)")
@@ -61,6 +80,8 @@ STANDING_FORBIDDEN = (
     "PRODUCT.md",
     "ARCHITECTURE.md",
     "DESIGN.md",
+    "uv.lock",
+    "pyproject.toml",
     "changes/*/proposal.md",
     "changes/*/spec.md",
     "changes/*/plan.md",
@@ -69,6 +90,15 @@ STANDING_FORBIDDEN = (
     "tests/test_merge_gate.py",
     "review/**",
 )
+QUESTIONS_PATH = "changes/QUESTIONS.md"
+
+
+@dataclass(frozen=True)
+class FileChange:
+    path: str
+    status: str  # added, removed, modified, renamed, copied, changed, unchanged
+    previous_path: str | None = None
+    patch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,10 +117,14 @@ class Review:
 
 
 @dataclass(frozen=True)
-class Reaction:
-    author: str
-    content: str
-    created_at: str  # ISO 8601, compared as text (GitHub always returns UTC with a Z)
+class WorkflowEvidence:
+    """The latest run of one trusted workflow file for the head commit."""
+
+    path: str
+    event: str
+    head_sha: str
+    status: str
+    jobs: dict[str, str]  # job name -> conclusion ("" while running)
 
 
 @dataclass
@@ -104,15 +138,20 @@ class PullFacts:
     head_repo_is_base_repo: bool
     labels: list[str]
     body: str
-    changed_files: list[str]
-    check_conclusions: dict[str, str]  # latest conclusion per check name on the head sha
-    ci_started_at: str | None  # earliest start of a required check on the head sha
-    issue_comments: list[Comment] = field(default_factory=list)
-    inline_comments: list[Comment] = field(default_factory=list)
+    files: list[FileChange]
+    files_complete: bool
+    ci: WorkflowEvidence | None = None
+    claude_review: WorkflowEvidence | None = None
     reviews: list[Review] = field(default_factory=list)
-    reactions: list[Reaction] = field(default_factory=list)
+    inline_comments: list[Comment] = field(default_factory=list)
+    codex_thumbs_on_request: bool = False  # +1 by Codex on the gate's request naming head_sha
     report_text: str | None = None  # changes/NNN-slug/report.md at the head sha
     plan_text: str | None = None  # changes/NNN-slug/plan.md on main
+    proposal_text: str | None = None  # changes/NNN-slug/proposal.md on main
+    merged_changes: frozenset[str] = frozenset()  # changes with a merged [build] PR
+    grounded_in_main: bool | None = None
+    main_changed_since_grounding: list[str] | None = None  # None: could not list completely
+    main_changed_since_branch: list[str] | None = None  # None: could not list completely
 
 
 @dataclass(frozen=True)
@@ -165,8 +204,98 @@ def parse_wall_expected(plan_text: str) -> list[str]:
     return patterns
 
 
+def parse_wall_forbidden(plan_text: str) -> list[str]:
+    """Every backticked path in the `wall_forbidden:` paragraph (up to the next blank line)."""
+    patterns: list[str] = []
+    in_block = False
+    for line in plan_text.splitlines():
+        if line.strip().startswith("wall_forbidden:"):
+            in_block = True
+        elif in_block and not line.strip():
+            break
+        if in_block:
+            patterns.extend(p for p in re.findall(r"`([^`]+)`", line) if "/" in p or "." in p)
+    return patterns
+
+
+def parse_depends_on(proposal_text: str) -> list[str] | None:
+    """The changes named on the `depends_on:` line; [] for `none`; None if the line is missing."""
+    found = DEPENDS_RE.search(proposal_text)
+    if not found:
+        return None
+    return CHANGE_RE.findall(found.group("deps"))
+
+
+def patch_lines(patch: str) -> tuple[list[str], list[str]]:
+    removed, added = [], []
+    for line in patch.splitlines():
+        if line.startswith(("@@", "---", "+++")):
+            continue
+        if line.startswith("-"):
+            removed.append(line[1:])
+        elif line.startswith("+"):
+            added.append(line[1:])
+    return removed, added
+
+
+def only_ticks(patch: str | None) -> bool:
+    """True when a diff only turns `- [ ]` into `- [x]` on otherwise identical lines."""
+    if not patch:
+        return False
+    removed, added = patch_lines(patch)
+    if not removed or len(removed) != len(added):
+        return False
+    if not all("- [ ]" in line for line in removed):
+        return False
+    return sorted(line.replace("- [ ]", "- [x]", 1) for line in removed) == sorted(added)
+
+
+def only_appends(patch: str | None) -> bool:
+    if not patch:
+        return False
+    removed, added = patch_lines(patch)
+    return not removed and bool(added)
+
+
 def is_blocker_text(text: str) -> bool:
     return bool(BLOCKER_LINE_RE.search(text))
+
+
+def wall_reasons(pr: PullFacts, change: str) -> list[str]:
+    reasons: list[str] = []
+    if pr.plan_text is None:
+        return [f"`changes/{change}/plan.md` is missing on `main`"]
+    expected = parse_wall_expected(pr.plan_text)
+    if not expected:
+        return ["the plan's `wall_expected` list is empty or unreadable"]
+    forbidden = parse_wall_forbidden(pr.plan_text)
+    tasks_path = f"changes/{change}/tasks.md"
+    report_path = f"changes/{change}/report.md"
+    allowed = [p for p in expected if p != tasks_path] + [report_path]
+    if not pr.files_complete:
+        reasons.append("the list of changed files is incomplete, so the wall cannot be checked")
+    if not pr.files:
+        reasons.append("the pull request changes no files")
+    for f in pr.files:
+        if f.path == tasks_path:
+            if f.status != "modified" or not only_ticks(f.patch):
+                reasons.append(f"`{tasks_path}` changes more than ticked boxes")
+            continue
+        if f.path == QUESTIONS_PATH:
+            if f.status != "modified" or not only_appends(f.patch):
+                reasons.append(f"`{QUESTIONS_PATH}` may only gain lines")
+            continue
+        sides = [f.path] + ([f.previous_path] if f.previous_path else [])
+        if f.status in ("renamed", "copied") and not f.previous_path:
+            reasons.append(f"`{f.path}` was renamed or copied from an unknown path")
+        for path in sides:
+            if matches_any(path, STANDING_FORBIDDEN):
+                reasons.append(f"`{path}` is standing-forbidden")
+            elif matches_any(path, forbidden):
+                reasons.append(f"`{path}` is in the plan's `wall_forbidden`")
+            elif not matches_any(path, allowed):
+                reasons.append(f"`{path}` is outside the change's wall")
+    return reasons
 
 
 def evaluate(pr: PullFacts) -> Verdict:
@@ -187,44 +316,68 @@ def evaluate(pr: PullFacts) -> Verdict:
     if HOLD_LABEL in pr.labels:
         reasons.append("the `hold` label is set")
 
-    for name in REQUIRED_CHECKS:
-        conclusion = pr.check_conclusions.get(name)
-        if conclusion != "success":
-            reasons.append(f"CI job `{name}` is `{conclusion or 'missing'}` on the head commit")
+    # Authorized to build at all (read from main, never from the pull request).
+    wall = parse_wall_expected(pr.plan_text) if pr.plan_text else []
+    if pr.proposal_text is None:
+        reasons.append(f"`changes/{change}/proposal.md` is missing on `main`")
+    else:
+        if not RATIFIED_RE.search(pr.proposal_text):
+            reasons.append("the proposal on `main` is not `status: ratified`")
+        deps = parse_depends_on(pr.proposal_text)
+        if deps is None:
+            reasons.append("the proposal has no `depends_on:` line")
+        else:
+            for dep in deps:
+                if dep not in pr.merged_changes:
+                    reasons.append(f"dependency `{dep}` has no merged `[build]` pull request")
+    if pr.plan_text is not None and not GROUNDED_RE.search(pr.plan_text):
+        reasons.append("the plan on `main` has no `grounded_at` commit")
+    elif pr.plan_text is not None:
+        if pr.grounded_in_main is not True:
+            reasons.append("`main` does not contain the plan's `grounded_at` commit")
+        if pr.main_changed_since_grounding is None:
+            reasons.append("could not list what `main` changed since `grounded_at`")
+        else:
+            moved = [p for p in pr.main_changed_since_grounding if matches_any(p, wall)]
+            if moved:
+                reasons.append(f"`main` changed `{moved[0]}` in this wall since `grounded_at`")
 
+    # Current with main.
+    if pr.main_changed_since_branch is None:
+        reasons.append("could not list what `main` changed since this branch was cut")
+    else:
+        touched = {f.path for f in pr.files} | {
+            f.previous_path for f in pr.files if f.previous_path
+        }
+        stale = [p for p in pr.main_changed_since_branch if p in touched or matches_any(p, wall)]
+        if stale:
+            reasons.append(f"`main` changed `{stale[0]}` since this branch was cut; update it")
+
+    # CI, from the trusted CI workflow's run for this exact commit.
     sha = pr.head_sha
-    claude_summaries = [
-        c
-        for c in pr.issue_comments
-        if c.author in CLAUDE_LOGINS
-        and SUMMARY_HEAD_RE.search(c.body)
-        and re.search(rf"(?m)^Commit:\s*{re.escape(sha)}\s*$", c.body)
-    ]
-    if not claude_summaries:
-        reasons.append("no Claude review summary for the head commit")
-    elif not any(BLOCKERS_ZERO_RE.search(c.body) for c in claude_summaries):
-        reasons.append("the Claude review summary for the head commit reports blockers")
-    claude_inline = [
-        c for c in pr.inline_comments if c.author in CLAUDE_LOGINS and c.commit_id == sha
-    ]
-    if any(is_blocker_text(c.body) for c in claude_inline):
-        reasons.append("a Claude inline finding on the head commit is a blocker")
-    if any(
-        r.author in CLAUDE_LOGINS and r.commit_id == sha and r.state == "CHANGES_REQUESTED"
-        for r in pr.reviews
-    ):
-        reasons.append("Claude requested changes on the head commit")
+    if pr.ci is None:
+        reasons.append("no CI run for the head commit")
+    elif pr.ci.path != CI_WORKFLOW or pr.ci.event != "pull_request" or pr.ci.head_sha != sha:
+        reasons.append("the CI evidence is not a pull request run of `ci.yml` for the head commit")
+    else:
+        for job in REQUIRED_CI_JOBS:
+            conclusion = pr.ci.jobs.get(job)
+            if conclusion != "success":
+                reasons.append(f"CI job `{job}` is `{conclusion or 'missing'}` on the head commit")
 
+    # Claude review, from the trusted review workflow's run for this exact commit.
+    cr = pr.claude_review
+    if cr is None:
+        reasons.append("no Claude review run for the head commit")
+    elif cr.path != REVIEW_WORKFLOW or cr.event != "pull_request" or cr.head_sha != sha:
+        reasons.append("the Claude review evidence is not a trusted run for the head commit")
+    elif cr.jobs.get(REVIEW_JOB) != "success":
+        state = cr.jobs.get(REVIEW_JOB) or "missing"
+        reasons.append(f"the Claude review of the head commit is `{state}`, not a clean pass")
+
+    # Codex review, bound to this exact commit.
     codex_reviews = [r for r in pr.reviews if r.author in CODEX_LOGINS and r.commit_id == sha]
-    codex_thumbs = [
-        r
-        for r in pr.reactions
-        if r.author in CODEX_LOGINS
-        and r.content == "+1"
-        and pr.ci_started_at is not None
-        and r.created_at >= pr.ci_started_at
-    ]
-    if not codex_reviews and not codex_thumbs:
+    if not codex_reviews and not pr.codex_thumbs_on_request:
         reasons.append("no Codex review for the head commit")
     codex_texts = [r.body for r in codex_reviews] + [
         c.body for c in pr.inline_comments if c.author in CODEX_LOGINS and c.commit_id == sha
@@ -245,24 +398,7 @@ def evaluate(pr: PullFacts) -> Verdict:
     if not WALL_SECTION_RE.search(pr.body or ""):
         reasons.append("the pull request body has no `## Wall check` section")
 
-    if pr.plan_text is None:
-        reasons.append(f"`changes/{change}/plan.md` is missing on `main`")
-    else:
-        allowed = parse_wall_expected(pr.plan_text) + [
-            f"changes/{change}/tasks.md",
-            f"changes/{change}/report.md",
-            "changes/QUESTIONS.md",
-        ]
-        if len(allowed) == 3:
-            reasons.append("the plan's `wall_expected` list is empty or unreadable")
-        if not pr.changed_files:
-            reasons.append("the pull request changes no files")
-        for path in pr.changed_files:
-            if matches_any(path, STANDING_FORBIDDEN):
-                reasons.append(f"`{path}` is standing-forbidden")
-            elif not matches_any(path, allowed):
-                reasons.append(f"`{path}` is outside the change's wall")
-
+    reasons.extend(wall_reasons(pr, change))
     return Verdict(not reasons, change, tuple(reasons))
 
 
@@ -270,18 +406,19 @@ def codex_request_body(sha: str) -> str:
     return f"@codex review\n\nMerge gate: no Codex review exists yet for head commit {sha}."
 
 
-def should_request_codex(pr: PullFacts, verdict: Verdict) -> bool:
-    """Ask Codex once per head commit, only when CI is green and its review is the gap.
-
-    Codex reviews a pull request when it opens; whether it re-reviews after later pushes is not
-    documented, so the gate asks explicitly. It never asks twice for the same commit.
-    """
+def should_request_codex(pr: PullFacts, verdict: Verdict, existing_bodies: list[str]) -> bool:
+    """Ask Codex once per head commit, only when CI is green and its review is the gap."""
     if "no Codex review for the head commit" not in verdict.reasons:
         return False
-    if any(pr.check_conclusions.get(name) != "success" for name in REQUIRED_CHECKS):
+    if pr.ci is None or any(pr.ci.jobs.get(j) != "success" for j in REQUIRED_CI_JOBS):
         return False
-    body = codex_request_body(pr.head_sha)
-    return not any(c.body == body for c in pr.issue_comments)
+    return codex_request_body(pr.head_sha) not in existing_bodies
+
+
+def status_body(verdict: Verdict, sha: str) -> str:
+    lines = [STATUS_MARKER, f"**Merge gate** for head commit `{sha}`: waiting on", ""]
+    lines.extend(f"- {r}" for r in verdict.reasons)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -308,10 +445,10 @@ class GitHub:
             raw = resp.read()
             return json.loads(raw) if raw else None
 
-    def paged(self, path: str, key: str | None = None) -> list:
+    def paged(self, path: str, key: str | None = None, limit_pages: int = 30) -> list:
         items: list = []
         sep = "&" if "?" in path else "?"
-        for page in range(1, 31):
+        for page in range(1, limit_pages + 1):
             got = self.request("GET", f"{path}{sep}per_page=100&page={page}")
             batch = got[key] if key else got
             items.extend(batch)
@@ -328,26 +465,83 @@ class GitHub:
             raise
         return base64.b64decode(got["content"]).decode("utf-8")
 
+    def compare_files(self, base: str, head: str) -> tuple[dict | None, list[str] | None]:
+        try:
+            got = self.request("GET", f"/compare/{base}...{head}")
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                return None, None
+            raise
+        files = got.get("files") or []
+        if len(files) >= MAX_COMPARE_FILES:
+            return got, None
+        paths = [f["filename"] for f in files]
+        paths += [f["previous_filename"] for f in files if f.get("previous_filename")]
+        return got, paths
 
-def gather(gh: GitHub, pr: dict) -> PullFacts:
+    def latest_run(self, workflow_path: str, sha: str) -> WorkflowEvidence | None:
+        name = workflow_path.rsplit("/", 1)[-1]
+        runs = self.request("GET", f"/actions/workflows/{name}/runs?head_sha={sha}&per_page=50")
+        runs = [r for r in runs.get("workflow_runs", []) if r.get("event") == "pull_request"]
+        if not runs:
+            return None
+        run = max(runs, key=lambda r: (r["id"], r.get("run_attempt", 1)))
+        jobs = self.request("GET", f"/actions/runs/{run['id']}/jobs?per_page=100")
+        return WorkflowEvidence(
+            path=(run.get("path") or "").split("@", 1)[0],
+            event=run.get("event", ""),
+            head_sha=run.get("head_sha", ""),
+            status=run.get("status", ""),
+            jobs={j["name"]: (j.get("conclusion") or "") for j in jobs.get("jobs", [])},
+        )
+
+
+def login(obj: dict) -> str:
+    return (obj.get("user") or {}).get("login", "")
+
+
+def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullFacts:
     number = pr["number"]
     sha = pr["head"]["sha"]
     title = TITLE_RE.match(pr["title"])
     change = title.group("change") if title else None
 
-    runs = gh.paged(f"/commits/{sha}/check-runs", key="check_runs")
-    latest: dict[str, dict] = {}
-    for run in runs:
-        name = run["name"]
-        if name not in REQUIRED_CHECKS:
-            continue
-        if name not in latest or run["id"] > latest[name]["id"]:
-            latest[name] = run
-    conclusions = {name: (run.get("conclusion") or run["status"]) for name, run in latest.items()}
-    starts = [run["started_at"] for run in latest.values() if run.get("started_at")]
+    full = gh.request("GET", f"/pulls/{number}")
+    raw_files = gh.paged(f"/pulls/{number}/files")
+    files = [
+        FileChange(f["filename"], f.get("status", ""), f.get("previous_filename"), f.get("patch"))
+        for f in raw_files
+    ]
+    complete = len(raw_files) == full.get("changed_files", -1) and len(raw_files) < MAX_FILES
 
-    def login(obj: dict) -> str:
-        return (obj.get("user") or {}).get("login", "")
+    comments = gh.paged(f"/issues/{number}/comments")
+    request = [
+        c
+        for c in comments
+        if login(c) == GATE_LOGIN and (c.get("body") or "") == codex_request_body(sha)
+    ]
+    thumbs = False
+    for c in request:
+        reactions = gh.paged(f"/issues/comments/{c['id']}/reactions")
+        thumbs = thumbs or any(
+            login(r) in CODEX_LOGINS and r.get("content") == "+1" for r in reactions
+        )
+
+    plan = gh.file_at(f"changes/{change}/plan.md", main_sha) if change else None
+    grounded = GROUNDED_RE.search(plan) if plan else None
+    in_main, since_grounding = None, None
+    if grounded:
+        cmp, since_grounding = gh.compare_files(grounded.group("sha"), main_sha)
+        in_main = cmp is not None and cmp.get("status") in ("ahead", "identical")
+
+    since_branch: list[str] | None = None
+    cmp, _ = gh.compare_files(main_sha, sha)
+    if cmp is not None:
+        base = (cmp.get("merge_base_commit") or {}).get("sha")
+        if base == main_sha:
+            since_branch = []
+        elif base:
+            _, since_branch = gh.compare_files(base, main_sha)
 
     return PullFacts(
         number=number,
@@ -359,27 +553,50 @@ def gather(gh: GitHub, pr: dict) -> PullFacts:
         head_repo_is_base_repo=(pr["head"].get("repo") or {}).get("full_name") == gh.repo,
         labels=[label["name"] for label in pr.get("labels", [])],
         body=pr.get("body") or "",
-        changed_files=[f["filename"] for f in gh.paged(f"/pulls/{number}/files")],
-        check_conclusions=conclusions,
-        ci_started_at=min(starts) if starts else None,
-        issue_comments=[
-            Comment(login(c), c.get("body") or "") for c in gh.paged(f"/issues/{number}/comments")
+        files=files,
+        files_complete=complete,
+        ci=gh.latest_run(CI_WORKFLOW, sha),
+        claude_review=gh.latest_run(REVIEW_WORKFLOW, sha),
+        reviews=[
+            Review(login(r), r.get("state", ""), r.get("body") or "", r.get("commit_id", ""))
+            for r in gh.paged(f"/pulls/{number}/reviews")
         ],
         inline_comments=[
             Comment(login(c), c.get("body") or "", c.get("commit_id"))
             for c in gh.paged(f"/pulls/{number}/comments")
         ],
-        reviews=[
-            Review(login(r), r.get("state", ""), r.get("body") or "", r.get("commit_id", ""))
-            for r in gh.paged(f"/pulls/{number}/reviews")
-        ],
-        reactions=[
-            Reaction(login(r), r.get("content", ""), r.get("created_at", ""))
-            for r in gh.paged(f"/issues/{number}/reactions")
-        ],
+        codex_thumbs_on_request=thumbs,
         report_text=gh.file_at(f"changes/{change}/report.md", sha) if change else None,
-        plan_text=gh.file_at(f"changes/{change}/plan.md", "main") if change else None,
+        plan_text=plan,
+        proposal_text=gh.file_at(f"changes/{change}/proposal.md", main_sha) if change else None,
+        merged_changes=merged,
+        grounded_in_main=in_main,
+        main_changed_since_grounding=since_grounding,
+        main_changed_since_branch=since_branch,
     )
+
+
+def merged_changes(gh: GitHub) -> frozenset[str]:
+    closed = gh.paged("/pulls?state=closed&base=main&sort=updated&direction=desc")
+    out = set()
+    for p in closed:
+        title = TITLE_RE.match(p.get("title", ""))
+        if title and p.get("merged_at"):
+            out.add(title.group("change"))
+    return frozenset(out)
+
+
+def post_status(gh: GitHub, number: int, body: str) -> None:
+    """Keep exactly one gate status comment per pull request, edited in place."""
+    comments = gh.paged(f"/issues/{number}/comments")
+    mine = [
+        c for c in comments if login(c) == GATE_LOGIN and STATUS_MARKER in (c.get("body") or "")
+    ]
+    if mine:
+        if mine[0].get("body") != body:
+            gh.request("PATCH", f"/issues/comments/{mine[0]['id']}", {"body": body})
+    else:
+        gh.request("POST", f"/issues/{number}/comments", {"body": body})
 
 
 def summary(lines: list[str]) -> None:
@@ -404,10 +621,15 @@ def main() -> int:
         summary(lines + ["No open `[build]` pull requests."])
         return 0
 
-    merged = False
+    # Pin the base once per run: every file read from main uses this exact commit.
+    main_sha = gh.request("GET", "/branches/main")["commit"]["sha"]
+    merged_set = merged_changes(gh)
+    lines.append(f"Evaluated against `main` at `{main_sha}`.")
+    lines.append("")
+    merged_one = False
     for pr in candidates:
         try:
-            facts = gather(gh, pr)
+            facts = gather(gh, pr, main_sha, merged_set)
             verdict = evaluate(facts)
         except Exception as err:  # noqa: BLE001 (fail closed: an error means this PR waits)
             lines.append(f"- #{pr['number']} waits: the gate could not read it ({err!r}).")
@@ -415,26 +637,30 @@ def main() -> int:
         if not verdict.ready:
             lines.append(f"- #{facts.number} `{facts.title}` waits:")
             lines.extend(f"  - {r}" for r in verdict.reasons)
-            if should_request_codex(facts, verdict) and not dry_run:
-                try:
+            if dry_run:
+                continue
+            try:
+                post_status(gh, facts.number, status_body(verdict, facts.head_sha))
+                bodies = [c.get("body") or "" for c in gh.paged(f"/issues/{facts.number}/comments")]
+                if should_request_codex(facts, verdict, bodies):
                     gh.request(
                         "POST",
                         f"/issues/{facts.number}/comments",
                         {"body": codex_request_body(facts.head_sha)},
                     )
                     lines.append("  - asked Codex to review the head commit.")
-                except urllib.error.HTTPError as err:
-                    lines.append(f"  - asking Codex for a review failed ({err.code}).")
+            except urllib.error.HTTPError as err:
+                lines.append(f"  - writing the status or the Codex request failed ({err.code}).")
             continue
-        if merged:
+        if merged_one:
             lines.append(f"- #{facts.number} is ready; it merges on the next run (one per run).")
             continue
         if dry_run:
             lines.append(f"- #{facts.number} is ready (dry run, not merged).")
-            merged = True
+            merged_one = True
             continue
         try:
-            gh.request(
+            result = gh.request(
                 "PUT",
                 f"/pulls/{facts.number}/merge",
                 {
@@ -446,8 +672,11 @@ def main() -> int:
         except urllib.error.HTTPError as err:
             lines.append(f"- #{facts.number} was ready but GitHub refused the merge ({err.code}).")
             continue
-        merged = True
-        lines.append(f"- #{facts.number} `{facts.title}` merged at head {facts.head_sha}.")
+        if not (isinstance(result, dict) and result.get("merged") is True and result.get("sha")):
+            lines.append(f"- #{facts.number} was ready but GitHub did not confirm a merge.")
+            continue
+        merged_one = True
+        lines.append(f"- #{facts.number} `{facts.title}` merged as `{result['sha']}`.")
         try:
             gh.request("DELETE", f"/git/refs/heads/{facts.head_ref}")
         except urllib.error.HTTPError as err:

@@ -50,7 +50,8 @@ section 3.
 6. `trust/outcomes.py`: the result-code sentence table (spec 1.25; acceptance test 37).
 7. `trust/constraints.py`: hard constraints (spec 1.18; acceptance tests 30, 31).
 8. `trust/grants.py`: `GrantStore` with stage, `list_pending`, approve, abort, `abort_all`,
-   sweep, and rails (spec 1.10 to 1.15, 1.21; acceptance tests 7 to 18, 28).
+   sweep, rails, and scope on every query (spec 1.10 to 1.15, 1.21, 1.26; acceptance tests
+   7 to 18, 28, 39, 40).
 9. `trust/executor.py`: `Executor.run` (spec 1.16; acceptance tests 19 to 27).
 10. `trust/gate.py`: `Gate.propose` wiring constraints, registry, validation, resolution,
     tiering, staging, and direct actions (spec 1.2, 1.5, 1.17, 1.19; acceptance tests 5, 29,

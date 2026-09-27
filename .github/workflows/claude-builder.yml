@@ -1,20 +1,25 @@
 # The scheduled builder.
 #
-# Uses anthropics/claude-code-action@v1. Auth: claude_code_oauth_token, minted once with
-# `claude setup-token` and stored as the CLAUDE_CODE_OAUTH_TOKEN repository secret. This runs on
-# the Claude Max subscription, not an API key, so a run costs GitHub Actions minutes only.
+# Uses anthropics/claude-code-action, pinned to the commit `v1` resolved to on 2026-09-26.
+# Auth: claude_code_oauth_token, minted once with `claude setup-token` and stored as the
+# CLAUDE_CODE_OAUTH_TOKEN repository secret. This runs on the Claude Max subscription, not an
+# API key, so a run costs GitHub Actions minutes only.
 #
 # Checked against the vendor docs on 2026-09-26:
 # - Scheduled runs work with no pull request or issue; `id-token: write` is needed for the
 #   Claude GitHub App. https://code.claude.com/docs/en/github-actions
 # - Bash commands must be listed in `--allowedTools` inside `claude_args`; there is no
-#   timeout input, so the job-level `timeout-minutes` bounds a run.
+#   timeout input, so the job-level `timeout-minutes` bounds a run. `additional_permissions`
+#   with `actions: read` lets Claude read workflow runs and logs.
 #   https://github.com/anthropics/claude-code-action/blob/main/docs/configuration.md
+# - setup-uv's `python-version` input sets UV_PYTHON; uv downloads that Python if missing.
+#   https://github.com/astral-sh/setup-uv (v10.1.0)
 # - GitHub runs schedules from the default branch only and, in a public repository, turns
 #   them off after 60 days with no activity.
 #
 # One run at a time (the concurrency group). The queue rules below are the queue-recovery rule
-# in DECISIONS.md D-015 and review finding 6.
+# in DECISIONS.md D-015. The merge gate re-checks eligibility itself; these rules only keep the
+# builder from wasting a run.
 
 name: Claude builder
 
@@ -27,6 +32,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: read
   id-token: write
 
 concurrency:
@@ -41,31 +47,37 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           python-version: "3.12"
       - name: Run Claude Code builder
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
           claude_args: |
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(gh:*),Bash(uv:*),Bash(npm:*),Bash(grep:*),Bash(ls:*),Bash(mkdir:*),Bash(date:*)"
           prompt: |
             Read AGENTS.md and CLAUDE.md before doing anything else. Do exactly ONE of the
             following, the first that applies, then stop.
 
-            A. Repair. Look at open, non-draft pull requests titled "[build] NNN-slug"
+            A. Repair. List open, non-draft pull requests titled "[build] NNN-slug"
                (gh pr list --state open --search "[build] in:title" --json number,title,headRefName,headRefOid,isDraft).
-               For each, read the latest "Merge gate" workflow run summary
-               (gh run list --workflow merge-gate.yml --limit 1, then gh run view <id>) to see
-               why it waits. A pull request needs repair when its head commit is more than
-               4 hours old (two builder runs) and it waits for a failing CI job, a blocker in
-               the Claude or Codex review of that commit, a report problem, or a wall problem.
-               Waiting only for a review that has not arrived yet is NOT a repair case.
-               To repair: check out its branch, fix exactly the cause, commit with a subject
-               starting "repair: ", update report.md's "Review findings and disposition"
-               (each finding: fixed in <sha> | refuted because ...), push, and stop.
+               For each, read the merge gate's status comment: the comment whose first line is
+               "<!-- petasos-merge-gate -->" (gh pr view <number> --comments). It lists exactly
+               why the pull request waits, for the head commit it names.
+               A pull request needs repair when that comment names its current head commit, the
+               head commit is more than 4 hours old (two builder runs), and a reason is one of:
+               a failing CI job, a blocker in the Claude or Codex review, a report problem, a
+               wall problem, or "`main` changed ... since this branch was cut; update it".
+               Waiting only for a review that has not arrived, for authorization, or for a
+               dependency is NOT a repair case.
+               To repair: check out its branch; for "update it", merge origin/main into the
+               branch; otherwise fix exactly the cause. Commit with a subject starting
+               "repair: ", update report.md's "Review findings and disposition" (each finding:
+               fixed in <sha> | refuted because ...), push, and stop.
                If the branch already has 2 commits whose subject starts "repair: ", do not
                repair again: mark the pull request as a draft (gh pr ready --undo), append one
                dated entry to changes/QUESTIONS.md on that branch explaining what keeps failing
@@ -75,7 +87,8 @@ jobs:
                no merged pull request, and a newest commit more than 6 hours old is abandoned:
                delete it (git push origin --delete build/NNN-slug). Then continue to C.
 
-            C. Build. The eligible change is the lowest-numbered changes/NNN-slug/ where ALL hold:
+            C. Build. The eligible change is the lowest-numbered changes/NNN-slug/ where ALL hold,
+               reading every file from origin/main:
                - its proposal.md says "status: ratified";
                - every change named in its "depends_on:" line has a MERGED pull request titled
                  "[build] <that change>" (gh pr list --state merged --search "[build] <slug> in:title");
@@ -85,15 +98,17 @@ jobs:
                If none is eligible, exit cleanly and change nothing.
                Otherwise follow AGENTS.md section 2 exactly, in order: claim with an empty commit
                on a new branch before reading further; confirm grounded_at still holds; build
-               the tasks in tasks.md in order; run `uv sync`, `uv run ruff check .`,
-               `uv run ruff format --check .`, and `uv run pytest`; freeze a commit and review
-               your own diff against the spec's acceptance tests; run the file wall check
-               (git diff --name-only origin/main...HEAD) against the plan's wall_expected;
-               write changes/NNN-slug/report.md in the AGENTS.md section 5 shape; open a pull
-               request titled "[build] NNN-slug" whose body is the report followed by a section
-               headed exactly "## Wall check" containing the command and its full output.
+               the tasks in tasks.md in order; run `uv sync --locked`, `uv run ruff check .`,
+               `uv run ruff format --check .`, `uv pip check`, and `uv run pytest`; freeze a
+               commit and review your own diff against the spec's acceptance tests; run the file
+               wall check (git diff --name-status origin/main...HEAD) against the plan's
+               wall_expected and wall_forbidden; write changes/NNN-slug/report.md in the
+               AGENTS.md section 5 shape; open a pull request titled "[build] NNN-slug" whose
+               body is the report followed by a section headed exactly "## Wall check"
+               containing the command and its full output.
 
-            Never merge. Never approve your own pull request. Never edit a proposal's status,
-            a spec, a plan, anything under .github/, or any other standing-forbidden path. If
-            you hit a stop-and-flag condition from AGENTS.md section 3, write the flag into
-            the report and open the pull request as a draft.
+            Never merge. Never approve your own pull request. Never post a comment that imitates
+            a review or the merge gate. Never edit a proposal's status, a spec, a plan,
+            pyproject.toml, uv.lock, anything under .github/, or any other standing-forbidden
+            path. If you hit a stop-and-flag condition from AGENTS.md section 3, write the flag
+            into the report and open the pull request as a draft.

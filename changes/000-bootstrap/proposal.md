@@ -39,6 +39,6 @@ run.
 
 ## Reader test
 
-After this merges, a reader can clone the repository, run `uv sync && uv run pytest`, see the
+After this merges, a reader can clone the repository, run `uv sync --locked && uv run pytest`, see the
 smoke and `ping` tests pass, and follow `docs/setup.md` to understand exactly what Elias did by hand that
 no agent could do for him.

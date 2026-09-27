@@ -30,6 +30,9 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       Satisfies acceptance tests 19 to 27.
 - [ ] Write `trust/gate.py`: `Gate.propose` and direct actions (spec 1.2, 1.5, 1.17, 1.19).
       Satisfies acceptance tests 5, 29, 30, 31, 32, 33.
+- [ ] Add scope (spec 1.26) to every grant, rail slot, record, ledger row, and query, with
+      the two-scope test. Satisfies acceptance test 39.
+- [ ] Add the rail admission-limit clock test. Satisfies acceptance test 40.
 - [ ] Add the ledger-content scan over every row the suite wrote. Satisfies acceptance
       test 36.
 - [ ] Add the import-hygiene test for `petasos.trust`, `petasos.ledger`, `petasos.storage`.

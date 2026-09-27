@@ -130,7 +130,7 @@ Every response on the way out passes the **guard seam** exactly once.
 18. Each client's memory reads are capped at its ceiling; T5 is unreachable over MCP for every identity.
 19. `list_pending_approvals`, `approve`, and `abort` are callable only by identities with the `approver` flag, which is a separate flag from "may stage".
 20. No response anywhere contains a ready-to-submit approval string.
-21. A visitor session sees and changes only its own namespace; one session's identities cannot list, approve, or abort another session's grants.
+21. A visitor session sees and changes only its own namespace; one session's identities cannot list, approve, abort, or run another session's grants. The trust core enforces this with a scope on every grant, rail slot, action record, and ledger row (change 001, spec 1.26).
 22. The repo contains no string from the private denylist (supplied to CI as a secret; never committed).
 
 ## 6. Storage
