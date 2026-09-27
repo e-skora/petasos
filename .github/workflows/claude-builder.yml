@@ -85,6 +85,8 @@ jobs:
                `gh run view <run id> --log-failed` and read the "severity | location | summary"
                lines printed by the "Require zero blockers (no model)" step, plus the
                inline comments on the pull request. Otherwise fix exactly the cause.
+               When the comment lists several repair reasons, handle all of them in this
+               one repair (for example merge origin/main AND fix the review blocker).
                Commit with a subject starting "repair: ", update report.md's "Review findings
                and disposition" (each finding: fixed in <sha> | refuted because ...), push,
                and stop. Every push makes a new head commit, so CI and both reviews run again.
