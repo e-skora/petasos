@@ -1,8 +1,8 @@
 # Plan: 001-trust-core
 
-grounded_at: (set by the planning thread when this change is ratified, to the `main` commit
-that contains the merged 000-bootstrap; the builder checks it and never fills it in. This
-change cannot be claimed until 000-bootstrap has merged.)
+grounded_at: `12b04a2` (the `main` commit that merged the 000-bootstrap build, PR #10,
+2026-09-27; the planning thread set this value after that merge, and the builder only
+checks it)
 
 lane: claude
 
