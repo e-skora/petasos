@@ -33,8 +33,7 @@ def _is_skipped_dir(relative_dir: Path) -> bool:
         return True
     relative_str = relative_dir.as_posix()
     return any(
-        relative_str == skip or relative_str.startswith(skip + "/")
-        for skip in SKIP_RELATIVE_DIRS
+        relative_str == skip or relative_str.startswith(skip + "/") for skip in SKIP_RELATIVE_DIRS
     )
 
 
@@ -42,9 +41,7 @@ def _iter_text_files(root: Path, self_path: Path):
     for dirpath, dirnames, filenames in os.walk(root):
         current = Path(dirpath)
         relative_dir = current.relative_to(root)
-        dirnames[:] = sorted(
-            d for d in dirnames if not _is_skipped_dir(relative_dir / d)
-        )
+        dirnames[:] = sorted(d for d in dirnames if not _is_skipped_dir(relative_dir / d))
         for filename in sorted(filenames):
             file_path = current / filename
             if file_path.resolve() == self_path:
