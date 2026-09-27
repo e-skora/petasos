@@ -22,21 +22,23 @@ real repository with green CI, so change 001 has solid ground to build on.
 4. A `Dockerfile` that runs the API under uvicorn, and a `fly.toml` with `auto_stop_machines`
    set to false and a `/healthz` check, even though the API itself does not exist yet: both
    files are needed for change 005 and are safe to write now as inert scaffolding.
-5. `docs/setup.md`, listing the exact one-time steps Elias performs by hand: creating the
+5. A minimal FastAPI app with `/healthz` and one authenticated MCP tool, `ping`, built on the
+   pinned `mcp` 2.x SDK, so the server API, routing, lifespan, and the 401-before-handshake
+   rule are proven before change 003 builds on them.
+6. `docs/setup.md`, listing the exact one-time steps Elias performs by hand: creating the
    GitHub repository, installing the Claude GitHub App, minting the OAuth token, adding the
-   five secrets, connecting the Codex GitHub integration, setting branch protection, and the
-   Cloudflare and Fly one-time setup.
-6. CI green on all three jobs (python, demo skipped gracefully, private-identifiers skipped
-   locally and green in CI where the secret exists).
+   secrets, connecting the Codex GitHub integration, and the Cloudflare and Fly one-time
+   setup, plus what the planning thread already set up (the `main` ruleset and the merge
+   gate).
+7. CI green on all three jobs.
 
 ## What this change does not deliver
 
-No trust logic, no memory, no MCP server, no demo app, no real deployment run. The
-Dockerfile and fly.toml describe how the (future) app will run; they do not need a working
-app to exist as files.
+No trust logic, no memory, no help-desk tools (only `ping`), no demo app, no real deployment
+run.
 
 ## Reader test
 
-After this merges, a reader can clone the repository, run `uv sync && uv run pytest`, see the
-smoke test pass, and follow `docs/setup.md` to understand exactly what Elias did by hand that
+After this merges, a reader can clone the repository, run `uv sync --locked && uv run pytest`, see the
+smoke and `ping` tests pass, and follow `docs/setup.md` to understand exactly what Elias did by hand that
 no agent could do for him.
