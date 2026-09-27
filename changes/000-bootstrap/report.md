@@ -9,11 +9,13 @@ server API, exact-route mounting, and the host-owned session manager lifespan th
 change 003 will extend with the help-desk tools. `docs/setup.md` records the one-time
 steps Elias still has to do by hand, and `Dockerfile` and `fly.toml` are ready for
 change 005 to wire up.
-Commit: 03df0c62b01d5fb13e9fee7ab70e254db2d25773 on branch build/000-bootstrap
+Commit: this report is committed on branch build/000-bootstrap; see the pull request's
+head commit for the exact sha (a report cannot correctly name the hash of the commit
+that contains it).
 Tests: CI run: triggered on this pull request's opening; see its Checks tab for the
 authoritative result (D-013: CI is the merge gate, never this report). Local count 176
 passed / 0 failed, 1 skipped (the private-identifier gate, which only runs where the
-`PRIVATE_DENYLIST` secret is set) at 03df0c62b01d5fb13e9fee7ab70e254db2d25773 (advisory).
+`PRIVATE_DENYLIST` secret is set), run against this same tree (advisory).
 Changed files:
 - Dockerfile
 - changes/000-bootstrap/tasks.md
