@@ -76,6 +76,12 @@ jobs:
             Return: commit = the HEAD COMMIT above, completed = true only if you read the whole
             diff, blockers = the number of blocker findings, findings = every finding.
             Do not approve, request changes, merge, or edit any file.
+      # Two script steps, so the merge gate can tell the cases apart from step conclusions
+      # alone (fourth-pass review, finding 1): the first fails when the result is missing,
+      # names another commit, says completed=false, or has a blocker count that does not match
+      # its findings (an incomplete or invalid review: nothing to repair); the second runs only
+      # after the first passed and fails exactly when the completed review has a blocker (a
+      # repair case). The gate reads these step names from .github/scripts/merge_gate.py.
       - name: Check the review result (no model)
         if: always()
         env:
@@ -98,11 +104,21 @@ jobs:
               problems.append("the review did not complete")
           if result.get("blockers") != counted:
               problems.append("the blocker count does not match the findings")
-          if counted:
-              problems.append(f"{counted} blocker(s) found")
+          if problems:
+              sys.exit("Review invalid or incomplete: " + "; ".join(problems))
+          print(f"Review complete for the head commit; {counted} blocker(s) reported.")
+          PY
+      - name: Require zero blockers (no model)
+        env:
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          findings = json.loads(os.environ["RESULT"]).get("findings") or []
           for f in findings:
               print(f"{f.get('severity')} | {f.get('location')} | {f.get('summary')}")
-          if problems:
-              sys.exit("Review not clean: " + "; ".join(problems))
-          print("Review complete for the head commit with zero blockers.")
+          counted = sum(1 for f in findings if f.get("severity") == "blocker")
+          if counted:
+              sys.exit(f"Review not clean: {counted} blocker(s) found (listed above).")
+          print("Zero blockers: the review passes.")
           PY
