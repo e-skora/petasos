@@ -15,6 +15,7 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -72,7 +73,18 @@ REPORT_TEXT = "# Report\n\nVerdict: BUILT\n"
 BODY_TEXT = "## Wall check\n\nPASS\n"
 
 TASKS_PATH = "changes/001-trust-core/tasks.md"
-TICK_ONLY_PATCH = "@@ -1,2 +1,2 @@\n-- [ ] Write x\n+- [x] Write x\n"
+QUESTIONS_PATH = merge_gate.QUESTIONS_PATH
+TASKS_BEFORE = "# Tasks\n\n- [ ] Write x\n- [ ] Write y\n"
+TASKS_AFTER = "# Tasks\n\n- [x] Write x\n- [ ] Write y\n"
+QUESTIONS_BEFORE = "# Questions\n\n1. old q\n"
+
+
+def tasks_change(before=TASKS_BEFORE, after=TASKS_AFTER, status="modified") -> FileChange:
+    return FileChange(TASKS_PATH, status, before=before, after=after)
+
+
+def questions_change(after, before=QUESTIONS_BEFORE, status="modified") -> FileChange:
+    return FileChange(QUESTIONS_PATH, status, before=before, after=after)
 
 
 def default_files() -> list[FileChange]:
@@ -80,7 +92,7 @@ def default_files() -> list[FileChange]:
         FileChange("src/petasos/trust/grants.py", "modified"),
         FileChange("tests/test_trust_grants.py", "added"),
         FileChange("changes/001-trust-core/report.md", "added"),
-        FileChange(TASKS_PATH, "modified", patch=TICK_ONLY_PATCH),
+        tasks_change(),
     ]
 
 
@@ -120,7 +132,7 @@ def ready_facts(**overrides) -> PullFacts:
         "merged_changes": frozenset({"000-bootstrap"}),
         "grounded_in_main": True,
         "main_changed_since_grounding": [],
-        "main_changed_since_branch": [],
+        "behind_main": False,
     }
     defaults.update(overrides)
     return PullFacts(**defaults)
@@ -254,30 +266,30 @@ def test_main_changed_since_grounding_unrelated_path_stays_ready():
 # ---------------------------------------------------------------------------------------------
 
 
-def test_main_changed_since_branch_unknown_not_ready():
+def test_behind_main_unknown_not_ready():
     assert_not_ready(
-        ready_facts(main_changed_since_branch=None),
-        "could not list what `main` changed since this branch was cut",
+        ready_facts(behind_main=None),
+        "could not tell whether the branch contains the current `main`",
     )
 
 
-def test_main_changed_since_branch_touched_file_not_ready():
-    assert_not_ready(
-        ready_facts(main_changed_since_branch=["src/petasos/trust/grants.py"]),
-        "`main` changed `src/petasos/trust/grants.py`",
-    )
+def test_behind_main_not_ready_regression():
+    """Third-pass finding 2: any commit on main after the branch was cut makes the pull
+    request wait, even when that commit touched nothing in the wall or the file list. The
+    old rule let main change pyproject.toml, uv.lock, ci.yml, or the spec without
+    invalidating the evidence produced against the older base."""
+    assert_not_ready(ready_facts(behind_main=True), merge_gate.BEHIND_MAIN_REASON)
+    # The selective rule is gone: there is no per-file list to be incomplete.
+    assert "main_changed_since_branch" not in PullFacts.__dataclass_fields__
 
 
-def test_main_changed_since_branch_wall_path_not_ready():
-    assert_not_ready(
-        ready_facts(main_changed_since_branch=["src/petasos/trust/untouched.py"]),
-        "`main` changed `src/petasos/trust/untouched.py`",
-    )
+def test_behind_main_reason_is_the_text_the_builder_prompt_matches():
+    workflow = (MODULE_PATH.parents[1] / "workflows/claude-builder.yml").read_text()
+    assert merge_gate.BEHIND_MAIN_REASON in workflow
 
 
-def test_main_changed_since_branch_unrelated_path_stays_ready():
-    facts = ready_facts(main_changed_since_branch=["docs/a.md"])
-    assert evaluate(facts).ready
+def test_up_to_date_branch_stays_ready():
+    assert evaluate(ready_facts(behind_main=False)).ready
 
 
 # ---------------------------------------------------------------------------------------------
@@ -339,7 +351,61 @@ def test_claude_review_wrong_sha_not_ready():
 def test_claude_review_job_not_success(conclusion):
     jobs = {} if conclusion is None else {"review": conclusion}
     cr = replace(ready_facts().claude_review, jobs=jobs)
-    assert_not_ready(ready_facts(claude_review=cr), "not a clean pass")
+    assert_not_ready(ready_facts(claude_review=cr), "the Claude review of the head commit")
+
+
+MODEL_STEP = merge_gate.REVIEW_MODEL_STEP
+CHECK_STEP = merge_gate.REVIEW_CHECK_STEP
+RUN_URL = "https://github.com/x/y/actions/runs/77"
+
+
+def test_claude_review_completed_with_blocker_says_so_and_links_the_run():
+    """Third-pass finding 3: a completed review that found a blocker is a repair case; the
+    builder is told where the findings are."""
+    cr = replace(
+        ready_facts().claude_review,
+        jobs={"review": "failure"},
+        url=RUN_URL,
+        steps={"review": {MODEL_STEP: "success", CHECK_STEP: "failure"}},
+    )
+    verdict = evaluate(ready_facts(claude_review=cr))
+    assert not verdict.ready
+    (reason,) = [r for r in verdict.reasons if "Claude review" in r]
+    assert "completed and found a problem" in reason
+    assert CHECK_STEP in reason
+    assert RUN_URL in reason
+    assert "did not complete" not in reason
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        {MODEL_STEP: "failure", CHECK_STEP: "failure"},  # authentication or a crash
+        {MODEL_STEP: "cancelled", CHECK_STEP: "failure"},  # timeout
+        {MODEL_STEP: "", CHECK_STEP: ""},  # still running
+        {},  # no step detail at all
+    ],
+)
+def test_claude_review_not_completed_is_not_a_finding(steps):
+    cr = replace(
+        ready_facts().claude_review,
+        jobs={"review": "failure"},
+        url=RUN_URL,
+        steps={"review": steps},
+    )
+    verdict = evaluate(ready_facts(claude_review=cr))
+    assert not verdict.ready
+    (reason,) = [r for r in verdict.reasons if "Claude review" in r]
+    assert "did not complete" in reason
+    assert "found a problem" not in reason
+    assert RUN_URL in reason
+
+
+def test_claude_review_failure_without_url_still_explains():
+    cr = replace(ready_facts().claude_review, jobs={"review": "failure"})
+    reason = merge_gate.claude_review_failure_reason(cr)
+    assert "did not complete" in reason
+    assert "(run " not in reason
 
 
 def test_claude_bot_comment_no_longer_counts_regression():
@@ -554,7 +620,7 @@ def test_no_files_not_ready():
     assert_not_ready(ready_facts(files=[]), "changes no files")
 
 
-def test_tasks_md_tick_only_patch_is_ready():
+def test_tasks_md_tick_only_is_ready():
     assert evaluate(ready_facts()).ready
 
 
@@ -562,59 +628,101 @@ def _files_without_tasks() -> list[FileChange]:
     return [f for f in default_files() if f.path != TASKS_PATH]
 
 
-def test_tasks_md_patch_editing_text_blocked():
-    files = _files_without_tasks() + [
-        FileChange(
-            TASKS_PATH, "modified", patch="@@ -1,2 +1,2 @@\n-- [ ] Write x\n+- [x] Write y\n"
-        )
-    ]
+def _with_tasks(**kwargs) -> list[FileChange]:
+    return _files_without_tasks() + [tasks_change(**kwargs)]
+
+
+def test_tasks_md_editing_text_blocked():
+    files = _with_tasks(after=TASKS_AFTER.replace("Write y", "Write z"))
     assert_not_ready(ready_facts(files=files), "changes more than ticked boxes")
 
 
 def test_tasks_md_unticking_blocked():
-    files = _files_without_tasks() + [
-        FileChange(
-            TASKS_PATH, "modified", patch="@@ -1,2 +1,2 @@\n-- [x] Write x\n+- [ ] Write x\n"
-        )
-    ]
+    files = _with_tasks(before=TASKS_AFTER, after=TASKS_BEFORE)
     assert_not_ready(ready_facts(files=files), "changes more than ticked boxes")
 
 
 def test_tasks_md_status_added_blocked():
-    files = _files_without_tasks() + [
-        FileChange(TASKS_PATH, "added", patch="@@ -0,0 +1,2 @@\n+- [x] Write x\n")
-    ]
+    files = _with_tasks(before=None, after=TASKS_AFTER, status="added")
     assert_not_ready(ready_facts(files=files), "changes more than ticked boxes")
 
 
-def test_tasks_md_patch_none_blocked():
-    files = _files_without_tasks() + [FileChange(TASKS_PATH, "modified", patch=None)]
+@pytest.mark.parametrize("before, after", [(None, TASKS_AFTER), (TASKS_BEFORE, None), (None, None)])
+def test_tasks_md_unreadable_side_blocked(before, after):
+    files = _with_tasks(before=before, after=after)
     assert_not_ready(ready_facts(files=files), "changes more than ticked boxes")
 
 
-def test_questions_md_append_only_patch_is_ready():
-    files = default_files() + [
-        FileChange("changes/QUESTIONS.md", "modified", patch="@@ -5,0 +6,2 @@\n+## 2026\n+1. q\n")
-    ]
+def test_tasks_md_added_instruction_after_tick_blocked_regression():
+    """Third-pass finding 1, first reproduction: ticking a box and adding a line that starts
+    with `++` slipped past the diff parser (it read `+++ ...` as a file heading). Whole-file
+    comparison sees the extra line."""
+    files = _with_tasks(
+        before="- [ ] Write x\n", after="- [x] Write x\n++ New unapproved instruction\n"
+    )
+    assert_not_ready(ready_facts(files=files), "changes more than ticked boxes")
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        TASKS_AFTER + "- [ ] Write z\n",  # a new task
+        TASKS_AFTER[:-1],  # trailing newline dropped
+        TASKS_AFTER.replace("- [x] Write x\n", "- [x] Write x\n\n"),  # a blank line
+        "# Tasks\n\n- [ ] Write y\n- [x] Write x\n",  # reordered
+        TASKS_AFTER.replace("- [x] Write x", "- [x] Write x - [ ]"),  # text after the box
+    ],
+)
+def test_tasks_md_any_other_difference_blocked(after):
+    files = _with_tasks(after=after)
+    assert_not_ready(ready_facts(files=files), "changes more than ticked boxes")
+
+
+def test_tasks_md_identical_contents_pass_the_shape_check():
+    files = _with_tasks(after=TASKS_BEFORE)
     assert evaluate(ready_facts(files=files)).ready
 
 
+def test_questions_md_append_only_is_ready():
+    files = default_files() + [questions_change(QUESTIONS_BEFORE + "\n## 2026\n2. new q\n")]
+    assert evaluate(ready_facts(files=files)).ready
+
+
+def test_questions_md_rewritten_line_blocked():
+    files = default_files() + [questions_change("# Questions\n\n1. replacement\n")]
+    assert_not_ready(ready_facts(files=files), "may only gain lines")
+
+
 def test_questions_md_removed_line_blocked():
+    files = default_files() + [questions_change("# Questions\n\n## 2026\n")]
+    assert_not_ready(ready_facts(files=files), "may only gain lines")
+
+
+def test_questions_md_deleted_question_hidden_as_diff_header_blocked_regression():
+    """Third-pass finding 1, second reproduction: removing an existing line that starts with
+    `--` while appending a new one slipped past the diff parser (it read `--- ...` as a file
+    heading). Whole-file comparison sees the old text is gone."""
     files = default_files() + [
-        FileChange(
-            "changes/QUESTIONS.md", "modified", patch="@@ -5,2 +5,1 @@\n-1. old q\n+## 2026\n"
+        questions_change(
+            before="-- Existing question\nKeep this\n", after="Keep this\nNew question\n"
         )
     ]
     assert_not_ready(ready_facts(files=files), "may only gain lines")
 
 
-def test_questions_md_status_removed_blocked():
-    files = default_files() + [FileChange("changes/QUESTIONS.md", "removed", patch=None)]
+def test_questions_md_unchanged_contents_blocked():
+    files = default_files() + [questions_change(QUESTIONS_BEFORE)]
     assert_not_ready(ready_facts(files=files), "may only gain lines")
 
 
-def test_questions_md_patch_none_blocked():
-    files = default_files() + [FileChange("changes/QUESTIONS.md", "modified", patch=None)]
+def test_questions_md_status_removed_blocked():
+    files = default_files() + [FileChange(QUESTIONS_PATH, "removed")]
+    assert_not_ready(ready_facts(files=files), "may only gain lines")
+
+
+@pytest.mark.parametrize("before, after", [(None, "x\n"), (QUESTIONS_BEFORE, None), (None, None)])
+def test_questions_md_unreadable_side_blocked(before, after):
+    files = default_files() + [questions_change(before=before, after=after)]
     assert_not_ready(ready_facts(files=files), "may only gain lines")
 
 
@@ -685,32 +793,73 @@ def test_parse_depends_on_missing_line_is_none():
 # ---------------------------------------------------------------------------------------------
 
 
-def test_only_ticks_true_for_tick_only_patch():
-    assert only_ticks(TICK_ONLY_PATCH)
+def test_only_ticks_true_for_ticks_only():
+    assert only_ticks("- [ ] a\n- [ ] b\n", "- [x] a\n- [x] b\n")
+    assert only_ticks("- [ ] a\n- [ ] b\n", "- [ ] a\n- [x] b\n")
 
 
-def test_only_ticks_false_for_no_patch():
-    assert not only_ticks(None)
+def test_only_ticks_true_for_identical_contents():
+    assert only_ticks("- [ ] a\n", "- [ ] a\n")
 
 
-def test_only_ticks_false_when_removed_and_added_counts_differ():
-    assert not only_ticks("@@ -1,1 +1,2 @@\n-- [ ] a\n+- [x] a\n+- [ ] b\n")
+def test_only_ticks_false_for_a_missing_side():
+    assert not only_ticks(None, "- [x] a\n")
+    assert not only_ticks("- [ ] a\n", None)
+
+
+def test_only_ticks_false_when_a_line_is_added_even_with_a_diff_header_prefix():
+    assert not only_ticks("- [ ] a\n", "- [x] a\n- [ ] b\n")
+    assert not only_ticks("- [ ] a\n", "- [x] a\n++ b\n")
+    assert not only_ticks("- [ ] a\n", "- [x] a\n--- b\n")
+
+
+def test_only_ticks_false_when_a_line_is_removed():
+    assert not only_ticks("- [ ] a\n-- b\n", "- [x] a\n")
 
 
 def test_only_ticks_false_when_text_also_changes():
-    assert not only_ticks("@@ -1,1 +1,1 @@\n-- [ ] a\n+- [x] b\n")
+    assert not only_ticks("- [ ] a\n", "- [x] b\n")
+    assert not only_ticks("- [ ] a\n", "- [X] a\n")
 
 
-def test_only_appends_true_for_pure_addition():
-    assert only_appends("@@ -5,0 +6,2 @@\n+## 2026\n+1. q\n")
+def test_only_ticks_false_when_a_box_is_unticked():
+    assert not only_ticks("- [x] a\n", "- [ ] a\n")
 
 
-def test_only_appends_false_for_no_patch():
-    assert not only_appends(None)
+def test_only_ticks_only_the_first_box_on_a_line_may_change():
+    assert only_ticks("- [ ] a - [ ] b\n", "- [x] a - [ ] b\n")
+    assert not only_ticks("- [ ] a - [ ] b\n", "- [x] a - [x] b\n")
 
 
-def test_only_appends_false_when_anything_removed():
-    assert not only_appends("@@ -1,1 +1,1 @@\n-old\n+new\n")
+def test_only_ticks_false_when_trailing_newline_changes():
+    assert not only_ticks("- [ ] a\n", "- [x] a")
+    assert not only_ticks("- [ ] a", "- [x] a\n")
+
+
+def test_only_appends_true_for_whole_new_lines_at_the_end():
+    assert only_appends("a\n", "a\nb\n")
+    assert only_appends("a\n", "a\n\n## 2026\n1. q\n")
+    assert only_appends("a", "a\nb\n")  # old last line kept whole
+    assert only_appends("", "b\n")
+
+
+def test_only_appends_false_for_a_missing_side():
+    assert not only_appends(None, "a\nb\n")
+    assert not only_appends("a\n", None)
+
+
+def test_only_appends_false_when_nothing_is_added():
+    assert not only_appends("a\n", "a\n")
+    assert not only_appends("a\n", "a\n\n")
+
+
+def test_only_appends_false_when_old_text_changes_or_moves():
+    assert not only_appends("a\nb\n", "a\nc\n")  # rewritten
+    assert not only_appends("a\nb\n", "a\n")  # removed
+    assert not only_appends("a\nb\n", "b\na\n")  # reordered
+    assert not only_appends("a\nb\n", "c\na\nb\n")  # prepended
+    assert not only_appends("a", "ab\n")  # old last line extended
+    assert not only_appends("-- old\nkeep\n", "keep\nnew\n")  # finding 1 reproduction
 
 
 # ---------------------------------------------------------------------------------------------
@@ -937,3 +1086,123 @@ def test_gather_reads_files_renames_and_main_pinned_paths():
     assert ("changes/001-trust-core/plan.md", MAIN_SHA) in fake.file_at_calls
     assert ("changes/001-trust-core/proposal.md", MAIN_SHA) in fake.file_at_calls
     assert ("changes/001-trust-core/report.md", SHA) in fake.file_at_calls
+    # Contents are fetched only for the shape-checked paths, and none was in this list.
+    assert not any(path.endswith("grants.py") for path, _ in fake.file_at_calls)
+    assert facts.behind_main is False
+
+
+class FakeGitHubForGatherShapes(FakeGitHubForGather):
+    """Lists tasks.md and QUESTIONS.md and serves different contents per ref."""
+
+    contents: ClassVar[dict[tuple[str, str], str]] = {
+        (TASKS_PATH, MAIN_SHA): TASKS_BEFORE,
+        (TASKS_PATH, SHA): TASKS_AFTER,
+        (QUESTIONS_PATH, MAIN_SHA): QUESTIONS_BEFORE,
+        (QUESTIONS_PATH, SHA): QUESTIONS_BEFORE + "2. new q\n",
+    }
+
+    def paged(self, path, key=None, limit_pages=30):
+        if path == "/pulls/1/files":
+            return [
+                {"filename": TASKS_PATH, "status": "modified"},
+                {"filename": QUESTIONS_PATH, "status": "modified"},
+            ]
+        return []
+
+    def file_at(self, path, ref):
+        self.file_at_calls.append((path, ref))
+        if (path, ref) in self.contents:
+            return self.contents[(path, ref)]
+        return super().file_at(path, ref)
+
+
+def test_gather_fetches_whole_contents_of_shape_checked_files_from_main_and_head():
+    fake = FakeGitHubForGatherShapes()
+    facts = gather(fake, open_pr_dict(), MAIN_SHA, frozenset())
+    by_path = {f.path: f for f in facts.files}
+    assert by_path[TASKS_PATH].before == TASKS_BEFORE
+    assert by_path[TASKS_PATH].after == TASKS_AFTER
+    assert by_path[QUESTIONS_PATH].before == QUESTIONS_BEFORE
+    assert by_path[QUESTIONS_PATH].after.endswith("2. new q\n")
+    assert (TASKS_PATH, MAIN_SHA) in fake.file_at_calls
+    assert (TASKS_PATH, SHA) in fake.file_at_calls
+    # No diff text is carried at all: the shape checks cannot fall back to one.
+    assert "patch" not in FileChange.__dataclass_fields__
+
+
+class FakeGitHubForGatherBase(FakeGitHubForGather):
+    def __init__(self, merge_base) -> None:
+        super().__init__()
+        self.merge_base = merge_base
+
+    def compare_files(self, base, head):
+        self.compare_calls.append((base, head))
+        if (base, head) == (MAIN_SHA, SHA):
+            if self.merge_base == "404":
+                return None, None
+            return {"status": "diverged", "merge_base_commit": {"sha": self.merge_base}}, []
+        return {"status": "ahead", "merge_base_commit": {"sha": MAIN_SHA}}, []
+
+
+def test_gather_marks_a_branch_behind_main_when_the_merge_base_is_older():
+    facts = gather(FakeGitHubForGatherBase(OLD_SHA), open_pr_dict(), MAIN_SHA, frozenset())
+    assert facts.behind_main is True
+    assert merge_gate.BEHIND_MAIN_REASON in evaluate(facts).reasons
+
+
+def test_gather_marks_a_branch_current_when_the_merge_base_is_main():
+    facts = gather(FakeGitHubForGatherBase(MAIN_SHA), open_pr_dict(), MAIN_SHA, frozenset())
+    assert facts.behind_main is False
+
+
+def test_gather_leaves_behind_main_unknown_when_the_compare_fails():
+    facts = gather(FakeGitHubForGatherBase("404"), open_pr_dict(), MAIN_SHA, frozenset())
+    assert facts.behind_main is None
+    assert not evaluate(facts).ready
+
+
+class FakeGitHubForRuns(merge_gate.GitHub):
+    """Answers the two Actions endpoints `latest_run` reads, with step detail."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def request(self, method, path, body=None):
+        self.calls.append(path)
+        if path.startswith("/actions/workflows/claude-review.yml/runs"):
+            return {
+                "workflow_runs": [
+                    {
+                        "id": 11,
+                        "event": "pull_request",
+                        "path": merge_gate.REVIEW_WORKFLOW,
+                        "head_sha": SHA,
+                        "status": "completed",
+                        "html_url": RUN_URL,
+                    }
+                ]
+            }
+        assert path == "/actions/runs/11/jobs?per_page=100"
+        return {
+            "jobs": [
+                {
+                    "name": "review",
+                    "conclusion": "failure",
+                    "steps": [
+                        {"name": "Set up job", "conclusion": "success"},
+                        {"name": MODEL_STEP, "conclusion": "success"},
+                        {"name": CHECK_STEP, "conclusion": "failure"},
+                    ],
+                }
+            ]
+        }
+
+
+def test_latest_run_carries_the_run_url_and_step_conclusions():
+    evidence = FakeGitHubForRuns().latest_run(merge_gate.REVIEW_WORKFLOW, SHA)
+    assert evidence.url == RUN_URL
+    assert evidence.jobs == {"review": "failure"}
+    assert evidence.steps["review"][MODEL_STEP] == "success"
+    assert evidence.steps["review"][CHECK_STEP] == "failure"
+    reason = merge_gate.claude_review_failure_reason(evidence)
+    assert "completed and found a problem" in reason and RUN_URL in reason

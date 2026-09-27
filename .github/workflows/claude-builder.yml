@@ -70,14 +70,23 @@ jobs:
                why the pull request waits, for the head commit it names.
                A pull request needs repair when that comment names its current head commit, the
                head commit is more than 4 hours old (two builder runs), and a reason is one of:
-               a failing CI job, a blocker in the Claude or Codex review, a report problem, a
-               wall problem, or "`main` changed ... since this branch was cut; update it".
+               a failing CI job, "the Claude review of the head commit completed and found a
+               problem", a Codex blocker, a report problem, a wall problem, or
+               "the branch is behind `main`; merge `main` into it".
                Waiting only for a review that has not arrived, for authorization, or for a
-               dependency is NOT a repair case.
-               To repair: check out its branch; for "update it", merge origin/main into the
-               branch; otherwise fix exactly the cause. Commit with a subject starting
-               "repair: ", update report.md's "Review findings and disposition" (each finding:
-               fixed in <sha> | refuted because ...), push, and stop.
+               dependency is NOT a repair case. Neither is "the Claude review of the head
+               commit did not complete": that run failed before reviewing (for example
+               authentication or a timeout), so there is no finding to act on; leave it.
+               To repair: check out its branch. For "behind `main`", run
+               `git merge origin/main` (never rebase; never force-push) and resolve conflicts
+               inside your wall only. For a Claude review problem, read the findings first:
+               the status comment links the review run; run
+               `gh run view <run id> --log-failed` and read the "severity | location | summary"
+               lines printed by the "Check the review result (no model)" step, plus the
+               inline comments on the pull request. Otherwise fix exactly the cause.
+               Commit with a subject starting "repair: ", update report.md's "Review findings
+               and disposition" (each finding: fixed in <sha> | refuted because ...), push,
+               and stop. Every push makes a new head commit, so CI and both reviews run again.
                If the branch already has 2 commits whose subject starts "repair: ", do not
                repair again: mark the pull request as a draft (gh pr ready --undo), append one
                dated entry to changes/QUESTIONS.md on that branch explaining what keeps failing

@@ -103,6 +103,7 @@ Format: `D-NNN | status | date | decision | why | alternatives rejected`.
 - Why: Elias's time is the scarce resource; the gate replaces his click with checks a script can verify. Parsing the two reviews' comments removes the unproven question of whether a bot review counts as a formal GitHub approval.
 - Supersedes: the "Elias merges in week one, auto-merge in week two" clause of D-006 and the week-one wording in D-007.
 - Rejected: requiring a formal approving review from a bot (unverified behavior); GitHub's built-in auto-merge alone (it cannot read the review comments or the report).
+- Note 2026-09-26 (third-pass review, finding 2): the gate also requires the PR's branch to contain the current `main`, whatever `main` changed, and the `main` ruleset requires an up-to-date branch at merge time. Evidence produced against an older base (older dependencies, workflows, or specs) never counts; the builder merges `main` into a stale branch and every check runs again on the new head. Finding 1: `tasks.md` and `changes/QUESTIONS.md` are compared as whole files, never as a diff.
 
 ## D-016 The v1 release promise
 - Status: RATIFIED by Elias 2026-09-26 ("otherwise yes to everything", answering the recommendation in `review/2026-09-26-plan-review-claude-response.md`)

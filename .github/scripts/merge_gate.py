@@ -7,6 +7,11 @@ from the GitHub REST API, so `tests/test_merge_gate.py` can test every rule with
 Version 2 (2026-09-26) answers the second-pass review (`review/2026-09-26-second-pass.md`,
 findings 1, 2, 4, 5, 8, 11). Evidence now comes only from channels the builder cannot write:
 workflow runs of trusted workflow files, Codex's own review objects, and files on `main`.
+Version 2.1 (2026-09-26) answers the third-pass review (`review/2026-09-26-third-pass.md`):
+finding 1 (the tick-only and append-only checks now compare whole file contents, never a
+diff), finding 2 (the head commit must contain the current `main`, so every piece of evidence
+was produced against the files it will merge into), and finding 3 (the status comment links
+the review run and says whether the Claude review found a problem or did not complete).
 
 A builder pull request merges only when ALL of these hold on its current head commit H:
 
@@ -15,21 +20,30 @@ A builder pull request merges only when ALL of these hold on its current head co
 2. Authorized: on `main`, the change's proposal says `status: ratified`; every change in its
    `depends_on` has a merged `[build]` pull request; its plan names a `grounded_at` commit that
    `main` contains; and `main` has not changed any file in the change's wall since then.
-3. Current: `main` has not changed any file this pull request touches, or any file in its
-   wall, since the branch was cut. Otherwise the builder updates the branch first.
+3. Current: H contains the `main` commit this run pinned (the merge base of H and `main` is
+   `main` itself). Any commit on `main` after the branch was cut, whatever file it touched,
+   makes the pull request wait until the builder merges `main` into the branch; that push
+   produces a new H, so CI and both reviews run again against the current dependencies,
+   workflows, and specs. The `main` ruleset also requires an up-to-date branch, so GitHub
+   refuses the merge itself if `main` moves between this check and the merge call.
 4. CI: the latest `CI` workflow run (`.github/workflows/ci.yml`, event `pull_request`) for H
    has jobs `python`, `demo`, and `private-identifiers`, each `success`.
 5. Claude review: the latest `Claude review` workflow run for H has its `review` job at
    `success`. That job fails unless the model returned a completed review of H with zero
    blockers (it checks the model's structured result in a separate script step), so a
-   comment, a skipped run, or a failed run never counts.
+   comment, a skipped run, or a failed run never counts. When it fails, the status comment
+   says which step failed (the model step: the review did not complete; the check step: the
+   review completed and found a problem) and links the run.
 6. Codex review: Codex posted a pull request review whose commit is H, or reacted with a
    thumbs-up to the gate's own request comment naming H. None of its findings on H is a
    blocker (`blocker`, `P0`, `P1`), and it did not request changes on H.
 7. Report: `changes/NNN-slug/report.md` at H says exactly `Verdict: BUILT`, no placeholders.
 8. Wall: the file list is complete; every changed path, and the old path of every rename,
-   is inside `wall_expected`, outside the plan's `wall_forbidden`, and not standing-forbidden;
-   `tasks.md` changes only tick boxes; `changes/QUESTIONS.md` only gains lines.
+   is inside `wall_expected`, outside the plan's `wall_forbidden`, and not standing-forbidden.
+   `tasks.md` and `changes/QUESTIONS.md` are compared as whole files, the copy on `main`
+   against the copy at H: `tasks.md` may differ only by `- [ ]` becoming `- [x]` on otherwise
+   identical lines; `changes/QUESTIONS.md` at H must start with the exact text of the copy on
+   `main` and only add whole lines after it.
 9. The pull request body has a `## Wall check` section.
 
 Anything else waits. The reasons go into one status comment on the pull request, which the
@@ -52,10 +66,16 @@ REQUIRED_CI_JOBS = ("python", "demo", "private-identifiers")
 CI_WORKFLOW = ".github/workflows/ci.yml"
 REVIEW_WORKFLOW = ".github/workflows/claude-review.yml"
 REVIEW_JOB = "review"
+# Step names inside the review job, as written in claude-review.yml. The model step runs the
+# review; the check step fails when the structured result is incomplete or has a blocker.
+REVIEW_MODEL_STEP = "Review the head commit"
+REVIEW_CHECK_STEP = "Check the review result (no model)"
 CODEX_LOGINS = frozenset({"chatgpt-codex-connector[bot]"})
 GATE_LOGIN = "github-actions[bot]"
 HOLD_LABEL = "hold"
 STATUS_MARKER = "<!-- petasos-merge-gate -->"
+# The builder's repair prompt (claude-builder.yml) matches this text; change both together.
+BEHIND_MAIN_REASON = "the branch is behind `main`; merge `main` into it"
 MAX_FILES = 3000
 MAX_COMPARE_FILES = 300
 
@@ -98,7 +118,10 @@ class FileChange:
     path: str
     status: str  # added, removed, modified, renamed, copied, changed, unchanged
     previous_path: str | None = None
-    patch: str | None = None
+    # Whole contents on `main` and at the head commit; fetched only for the two paths whose
+    # edits are shape-checked (`tasks.md`, `changes/QUESTIONS.md`). None: missing or unread.
+    before: str | None = None
+    after: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +148,8 @@ class WorkflowEvidence:
     head_sha: str
     status: str
     jobs: dict[str, str]  # job name -> conclusion ("" while running)
+    url: str = ""  # the run's page on GitHub, for the status comment
+    steps: dict[str, dict[str, str]] = field(default_factory=dict)  # job -> step -> conclusion
 
 
 @dataclass
@@ -151,7 +176,7 @@ class PullFacts:
     merged_changes: frozenset[str] = frozenset()  # changes with a merged [build] PR
     grounded_in_main: bool | None = None
     main_changed_since_grounding: list[str] | None = None  # None: could not list completely
-    main_changed_since_branch: list[str] | None = None  # None: could not list completely
+    behind_main: bool | None = None  # True: the head does not contain main; None: unknown
 
 
 @dataclass(frozen=True)
@@ -226,39 +251,65 @@ def parse_depends_on(proposal_text: str) -> list[str] | None:
     return CHANGE_RE.findall(found.group("deps"))
 
 
-def patch_lines(patch: str) -> tuple[list[str], list[str]]:
-    removed, added = [], []
-    for line in patch.splitlines():
-        if line.startswith(("@@", "---", "+++")):
+def only_ticks(before: str | None, after: str | None) -> bool:
+    """True when `after` is `before` with some `- [ ]` boxes turned into `- [x]`, nothing else.
+
+    Whole contents, never a diff (third-pass finding 1: a diff parser can mistake a content
+    line starting with `++` or `--` for a file heading). Line count, order, every other
+    character, and the trailing newline must be identical.
+    """
+    if before is None or after is None:
+        return False
+    if before.endswith("\n") != after.endswith("\n"):
+        return False
+    old_lines, new_lines = before.split("\n"), after.split("\n")
+    if len(old_lines) != len(new_lines):
+        return False
+    for old, new in zip(old_lines, new_lines, strict=True):
+        if old == new:
             continue
-        if line.startswith("-"):
-            removed.append(line[1:])
-        elif line.startswith("+"):
-            added.append(line[1:])
-    return removed, added
+        if "- [ ]" not in old or new != old.replace("- [ ]", "- [x]", 1):
+            return False
+    return True
 
 
-def only_ticks(patch: str | None) -> bool:
-    """True when a diff only turns `- [ ]` into `- [x]` on otherwise identical lines."""
-    if not patch:
+def only_appends(before: str | None, after: str | None) -> bool:
+    """True when `after` is exactly `before` followed by at least one whole new line."""
+    if before is None or after is None:
         return False
-    removed, added = patch_lines(patch)
-    if not removed or len(removed) != len(added):
+    if not after.startswith(before) or len(after) <= len(before):
         return False
-    if not all("- [ ]" in line for line in removed):
-        return False
-    return sorted(line.replace("- [ ]", "- [x]", 1) for line in removed) == sorted(added)
-
-
-def only_appends(patch: str | None) -> bool:
-    if not patch:
-        return False
-    removed, added = patch_lines(patch)
-    return not removed and bool(added)
+    if before and not before.endswith("\n") and not after[len(before)].startswith("\n"):
+        return False  # the addition would change the old last line
+    return after[len(before) :].strip("\n") != ""
 
 
 def is_blocker_text(text: str) -> bool:
     return bool(BLOCKER_LINE_RE.search(text))
+
+
+def claude_review_failure_reason(cr: WorkflowEvidence) -> str:
+    """Why a non-passing review job fails, in words the builder can act on (finding 3).
+
+    The review job has two steps. If the model step passed and the check step failed, the
+    review completed and its structured result had a blocker or was inconsistent: the
+    findings are the `severity | location | summary` lines in that step's log and the inline
+    comments on the pull request. Anything else (the model step failed, was cancelled, or
+    never ran: authentication, timeout, a skipped job) is an incomplete review, not a finding.
+    """
+    state = cr.jobs.get(REVIEW_JOB) or "missing"
+    steps = cr.steps.get(REVIEW_JOB, {})
+    where = f" (run {cr.url})" if cr.url else ""
+    model, check = steps.get(REVIEW_MODEL_STEP), steps.get(REVIEW_CHECK_STEP)
+    if model == "success" and check == "failure":
+        return (
+            "the Claude review of the head commit completed and found a problem: read the "
+            f"`{REVIEW_CHECK_STEP}` step's log and the inline comments{where}"
+        )
+    return (
+        f"the Claude review of the head commit did not complete (job `{state}`, model step "
+        f"`{model or 'missing'}`); nothing to repair from it until a run completes{where}"
+    )
 
 
 def wall_reasons(pr: PullFacts, change: str) -> list[str]:
@@ -278,11 +329,11 @@ def wall_reasons(pr: PullFacts, change: str) -> list[str]:
         reasons.append("the pull request changes no files")
     for f in pr.files:
         if f.path == tasks_path:
-            if f.status != "modified" or not only_ticks(f.patch):
+            if f.status != "modified" or not only_ticks(f.before, f.after):
                 reasons.append(f"`{tasks_path}` changes more than ticked boxes")
             continue
         if f.path == QUESTIONS_PATH:
-            if f.status != "modified" or not only_appends(f.patch):
+            if f.status != "modified" or not only_appends(f.before, f.after):
                 reasons.append(f"`{QUESTIONS_PATH}` may only gain lines")
             continue
         sides = [f.path] + ([f.previous_path] if f.previous_path else [])
@@ -342,16 +393,13 @@ def evaluate(pr: PullFacts) -> Verdict:
             if moved:
                 reasons.append(f"`main` changed `{moved[0]}` in this wall since `grounded_at`")
 
-    # Current with main.
-    if pr.main_changed_since_branch is None:
-        reasons.append("could not list what `main` changed since this branch was cut")
-    else:
-        touched = {f.path for f in pr.files} | {
-            f.previous_path for f in pr.files if f.previous_path
-        }
-        stale = [p for p in pr.main_changed_since_branch if p in touched or matches_any(p, wall)]
-        if stale:
-            reasons.append(f"`main` changed `{stale[0]}` since this branch was cut; update it")
+    # Current with main: the head must contain the pinned main commit, whatever main changed
+    # (third-pass finding 2: dependencies, workflows, and specs sit outside the wall but decide
+    # what CI and the reviews test, so evidence from an older base does not count).
+    if pr.behind_main is None:
+        reasons.append("could not tell whether the branch contains the current `main`")
+    elif pr.behind_main:
+        reasons.append(BEHIND_MAIN_REASON)
 
     # CI, from the trusted CI workflow's run for this exact commit.
     sha = pr.head_sha
@@ -372,8 +420,7 @@ def evaluate(pr: PullFacts) -> Verdict:
     elif cr.path != REVIEW_WORKFLOW or cr.event != "pull_request" or cr.head_sha != sha:
         reasons.append("the Claude review evidence is not a trusted run for the head commit")
     elif cr.jobs.get(REVIEW_JOB) != "success":
-        state = cr.jobs.get(REVIEW_JOB) or "missing"
-        reasons.append(f"the Claude review of the head commit is `{state}`, not a clean pass")
+        reasons.append(claude_review_failure_reason(cr))
 
     # Codex review, bound to this exact commit.
     codex_reviews = [r for r in pr.reviews if r.author in CODEX_LOGINS and r.commit_id == sha]
@@ -493,6 +540,11 @@ class GitHub:
             head_sha=run.get("head_sha", ""),
             status=run.get("status", ""),
             jobs={j["name"]: (j.get("conclusion") or "") for j in jobs.get("jobs", [])},
+            url=run.get("html_url") or "",
+            steps={
+                j["name"]: {s["name"]: (s.get("conclusion") or "") for s in j.get("steps") or []}
+                for j in jobs.get("jobs", [])
+            },
         )
 
 
@@ -508,10 +560,19 @@ def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullF
 
     full = gh.request("GET", f"/pulls/{number}")
     raw_files = gh.paged(f"/pulls/{number}/files")
-    files = [
-        FileChange(f["filename"], f.get("status", ""), f.get("previous_filename"), f.get("patch"))
-        for f in raw_files
-    ]
+    shape_checked = {f"changes/{change}/tasks.md", QUESTIONS_PATH} if change else set()
+    files = []
+    for f in raw_files:
+        path = f["filename"]
+        before = after = None
+        if path in shape_checked:
+            # Whole contents, both sides. `main` is the true base only because rule 3 refuses
+            # a head that does not contain the pinned main commit.
+            before = gh.file_at(path, main_sha)
+            after = gh.file_at(path, sha)
+        files.append(
+            FileChange(path, f.get("status", ""), f.get("previous_filename"), before, after)
+        )
     complete = len(raw_files) == full.get("changed_files", -1) and len(raw_files) < MAX_FILES
 
     comments = gh.paged(f"/issues/{number}/comments")
@@ -534,14 +595,14 @@ def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullF
         cmp, since_grounding = gh.compare_files(grounded.group("sha"), main_sha)
         in_main = cmp is not None and cmp.get("status") in ("ahead", "identical")
 
-    since_branch: list[str] | None = None
+    # Behind main? The head contains the pinned main commit exactly when comparing
+    # main...head reports main as the merge base (status `ahead` or `identical`).
+    behind: bool | None = None
     cmp, _ = gh.compare_files(main_sha, sha)
     if cmp is not None:
         base = (cmp.get("merge_base_commit") or {}).get("sha")
-        if base == main_sha:
-            since_branch = []
-        elif base:
-            _, since_branch = gh.compare_files(base, main_sha)
+        if base:
+            behind = base != main_sha
 
     return PullFacts(
         number=number,
@@ -572,7 +633,7 @@ def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullF
         merged_changes=merged,
         grounded_in_main=in_main,
         main_changed_since_grounding=since_grounding,
-        main_changed_since_branch=since_branch,
+        behind_main=behind,
     )
 
 

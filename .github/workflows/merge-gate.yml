@@ -11,6 +11,10 @@
 #   https://docs.github.com/en/actions/concepts/security/github_token
 # - Scheduled runs can be delayed at busy times (the top of the hour), so this runs off the hour.
 #   https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
+# - The main ruleset's required-checks rule has "require branches to be up to date before
+#   merging" on (strict_required_status_checks_policy: true), so GitHub itself refuses a merge
+#   when main moved after the gate evaluated the pull request (third-pass review, finding 2).
+#   https://docs.github.com/en/rest/repos/rules
 #
 # Scheduled workflows always run the copy on main, so a pull request cannot change the gate
 # that judges it.
