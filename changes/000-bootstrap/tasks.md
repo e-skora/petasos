@@ -22,7 +22,7 @@ completes it.
 - [x] Write `docs/setup.md` in the three parts plan.md step 7 describes.
       Check: a fresh reader with no other context can follow part 2 top to bottom with no
       missing step, and every vendor step cites a URL.
-- [ ] Confirm the full CI workflow passes on the claim branch: `python` (sync, ruff check,
+- [x] Confirm the full CI workflow passes on the claim branch: `python` (sync, ruff check,
       ruff format check, `uv pip check`, pytest), `demo` (skips cleanly, no `demo/package.json`
       yet), `private-identifiers` (skips locally, wired for the CI secret).
       Check: the GitHub Actions run for the PR shows all three jobs green (or gracefully

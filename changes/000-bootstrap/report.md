@@ -12,10 +12,12 @@ change 005 to wire up.
 Commit: this report is committed on branch build/000-bootstrap; see the pull request's
 head commit for the exact sha (a report cannot correctly name the hash of the commit
 that contains it).
-Tests: CI run: triggered on this pull request's opening; see its Checks tab for the
-authoritative result (D-013: CI is the merge gate, never this report). Local count 176
-passed / 0 failed, 1 skipped (the private-identifier gate, which only runs where the
-`PRIVATE_DENYLIST` secret is set), run against this same tree (advisory).
+Tests: CI run https://github.com/e-skora/petasos/actions/runs/36314920716 (`python`,
+`demo`, `private-identifiers` all succeeded) on pull request #10's opening commit;
+its head will move once this commit lands, and the merge gate reads whichever run CI
+posts for that head commit (D-013: CI is the merge gate, never this report). Local
+count 176 passed / 0 failed, 1 skipped (the private-identifier gate, which only runs
+where the `PRIVATE_DENYLIST` secret is set), run against this same tree (advisory).
 Changed files:
 - Dockerfile
 - changes/000-bootstrap/tasks.md
