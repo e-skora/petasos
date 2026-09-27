@@ -55,9 +55,6 @@ jobs:
         uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Temporary, to read why the first run ended with is_error (2026-09-26). The action
-          # hides Claude output by default; the repository holds no secrets it could print.
-          show_full_output: true
           additional_permissions: |
             actions: read
           claude_args: |
