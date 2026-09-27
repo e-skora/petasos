@@ -6,11 +6,11 @@ Status: being built in public; see changes/ for the build ledger.
 
 ## Watch (coming)
 
-A recorded terminal transcript and a short screen recording of the demo app, showing three client identities behaving differently, a canary catching a leak, and an approval held and released.
+A recorded terminal transcript and a short screen recording of the demo app, showing three client identities behaving differently, a canary tripping when someone tries to read the one ticket it is planted in, and an approval held and released.
 
 ## Connect (coming)
 
-A live MCP (Model Context Protocol, the standard way an AI assistant calls outside tools) endpoint and a published demo token you can paste into your own Claude, Codex, or curl session to experience the gate yourself.
+A live MCP (Model Context Protocol, the standard way an AI assistant calls outside tools) endpoint. Mint a one-hour visitor session with one documented command, then paste the URL and a session token into your own Claude, Codex, or curl session to experience the gate yourself.
 
 ## Inspect (coming)
 

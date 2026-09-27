@@ -18,13 +18,14 @@ Planned changes for v1. Proposals exist for 000 to 006; 000 and 001 also have sp
 
 | NNN | Slug | Lane | Depends on | Target day |
 |---|---|---|---|---|
-| 000 | bootstrap | claude | none | 1 |
+| 000 | bootstrap (plus an authenticated MCP `ping`) | claude | none | 1 |
 | 001 | trust-core | claude | 000 | 1 to 3 |
-| 002 | memory-canary-guard | claude | 000 (parallel with 001; disjoint wall) | 2 to 4 |
-| 003 | mcp-server-helpdesk | claude | 001, 002 | 4 to 6 |
-| 004 | owner-api-and-demo-app | codex or claude | 003 | 6 to 8 |
-| 005 | deploy-fly-cloudflare | claude | 003 | 8 to 9 |
-| 006 | readme-transcript-site | claude (Cowork writes prose) | 004, 005 | 9 to 10 |
-| 007 | explain (stretch) | codex | 003 | 10 to 12 |
-| 008 | intent-gate (stretch) | codex | 003 | 10 to 12 |
-| 009 | hardening (rate limits at edge, ledger rotation, hourly reset, verify endpoint polish) | claude | 005 | 12 to 14 |
+| 002 | memory-canary-guard | claude | 001 (uses its `storage.Database`) | 3 to 4 |
+| 003 | mcp-server-helpdesk (plus visitor sessions) | claude | 001, 002 | 4 to 6 |
+| 004 | owner-api-and-demo-app (guided refund journey) | codex or claude | 003 | 6 to 8 |
+| 005 | deploy-fly-cloudflare (plus launch controls: payload bounds, retention, reset ordering) | claude | 003 | 8 to 9 |
+| 006 | readme-transcript-site | claude (Cowork writes prose) | 004, 005 | 9 to 11 |
+
+Days 12 to 14 are reserved for failure cases, accessibility, evidence, and repair. The README storyboard is drafted in week one, before 006. Out of v1 (D-016): 007 explain and 008 intent gate; the old 009 hardening list is split between 003 (session quotas) and 005 (launch controls).
+
+How a change merges: the builder opens `[build] NNN-slug`; CI, the Claude review, and the Codex review run on it; the merge gate (`.github/workflows/merge-gate.yml`, D-015) squash-merges it when all pass. `merged` in a proposal's status is written by the Cowork close-out thread afterward; the builder derives eligibility from merged pull requests, not from that field.
