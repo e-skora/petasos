@@ -1,7 +1,7 @@
 # Plan: 000-bootstrap
 
-grounded_at: `110b9a0` (the seed commit on `main`, 2026-09-26; the planning thread sets this
-value at ratification, and the builder only checks it)
+grounded_at: `adad3c9` (the `main` commit that merged planning PR #3, 2026-09-26; the planning
+thread set this value at ratification, and the builder only checks it)
 
 lane: claude
 
