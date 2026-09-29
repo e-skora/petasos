@@ -65,7 +65,9 @@ second gets one "behind main" repair from the builder.
    to 3.8, 3.15, 3.21). Acceptance tests 2, 5, 6, 7, 8, 10, 14, 26, and the MCP halves of 9,
    12, 13, 23.
 5. `mcp/guard_seam.py` (spec 3.9, 3.10: unit buffering, SSE framing, the live canary set, the
-   409 and termination paths, the route label, the ledger row and counter) and `app.py`
+   409 first-unit path and the `event: message` later-unit termination, each tested through the
+   real MCP client as well as recorded ASGI sends, the route label, the ledger row and counter)
+   and `app.py`
    rewritten to `create_app(db, clock=)` with the middleware order in 3.23. Acceptance tests
    15 to 20, then the HTTP halves of 21 to 24, then 27, 28, and the reader test 29.
    `tests/test_app_mcp.py` from 000 is rewritten for the new `create_app` signature; its five
