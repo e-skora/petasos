@@ -27,21 +27,24 @@ The merge gate enforces this list mechanically from the copy of this file on `ma
 
 Change 003 (mcp-server-helpdesk) depends on this change: its guard seam calls
 `assert_no_private_payload` and `all_canaries`, and its help-desk seed data plants the canary
-ticket through `MemoryStore.put`. 003's spec is written against the interface in this spec
+ticket through `MemoryStore.put_in` inside its session-mint transaction. 003's spec is written against the interface in this spec
 (section 2); 003 is grounded only after this change merges. Nothing else builds alongside.
 
 ## Build order
 
 1. `memory/store.py`: `MemoryTier`, `Entry`, `InvalidEntry`, `TierLocked`, `MEMORY_SCHEMA`,
-   `MemoryStore` with `put`, `put_in`, `read`, `search`, `sweep` (spec 2.1 to 2.5, 2.7 to 2.10, 2.15).
-   Then the two-line `storage.py` edit and the table-list test update (spec 2.2). Acceptance
-   tests 1, 3 to 8, 11 to 14.
-2. `memory/canary.py`: `mint_canary`, `all_canaries`, `canary_entry` (spec 2.6, 2.14).
-   Acceptance tests 9, 10.
-3. `memory/guard.py`: `Hit`, `GuardTripped`, `scan`, `assert_no_private_payload` (spec 2.11
-   to 2.13). Acceptance tests 15 to 20.
+   `MemoryStore` with `put`, `put_in`, `read`, `search`, `sweep`, `_sweep_in` (spec 2.1 to
+   2.5, 2.7 to 2.10, 2.15). Then the two-line `storage.py` edit and the table-list test
+   update (spec 2.2). Acceptance tests 1, 3, 8, 13 to 16, and the `TierLocked` and expiry
+   halves of 7 and 9; tests 4 to 6, 9, 10 complete with step 2.
+2. `memory/canary.py`: `mint_canary`, `CanarySet`, `canary_set`, `all_canaries`,
+   `canary_entry`, and the minting, marker stripping, and re-planting inside `put_in`
+   (spec 2.5, 2.6, 2.14). Acceptance tests 4 to 7, 9 to 12.
+3. `memory/guard.py`: `Hit`, `GuardTripped`, `scan`, `assert_no_private_payload` with the
+   node, byte, and depth bounds and the prefix-window match rule (spec 2.11 to 2.13).
+   Acceptance tests 17 to 24.
 4. `memory/__init__.py` with the export list in spec section 2, then the reader test
-   (acceptance test 21) and the import-hygiene test (acceptance test 2).
+   (acceptance test 25) and the import-hygiene test (acceptance test 2).
 
 Every test database lives under pytest's `tmp_path`; every timestamp comes from the
 `frozen_clock` fixture in `tests/conftest.py`.
@@ -50,5 +53,5 @@ Every test database lives under pytest's `tmp_path`; every timestamp comes from 
 
 In addition to AGENTS.md section 3: if `Database.migrate()` cannot take the memory schema
 without changing more than the import and `executescript` lines, stop and flag rather than
-restructuring `storage.py`. If the 1 MB scan bound (acceptance test 20) cannot be met with a
-plain substring search, flag it with the timing rather than adding a dependency.
+restructuring `storage.py`. If the scan bounds (acceptance tests 23 and 24) cannot be met with the
+prefix-window rule in spec 2.12, flag it with the timing rather than adding a dependency.
