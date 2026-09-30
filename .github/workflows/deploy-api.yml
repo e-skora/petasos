@@ -1,35 +1,124 @@
-# Deploys the API and MCP server to Fly.io when Elias starts a release by hand.
-# Flags and action versions must be verified against current vendor docs before the
-# first real run: https://fly.io/docs/flyctl/deploy/ and
-# https://github.com/superfly/flyctl-actions
+# Deploys the API and MCP server to Fly.io when Elias starts a release by hand (D-015).
+#
+# A release names one exact commit. This workflow refuses anything that is not a 40-character
+# commit id, refuses a commit that is not on `main`, refuses a commit whose CI checks are not
+# all green, deploys with exactly one machine, and then proves the release with the smoke
+# journey (changes/005-deploy-fly-cloudflare/spec.md 5.9 and 5.10). A rollback is a run of
+# this same workflow with the previous known-good commit (docs/deploy.md).
+#
+# Flags and pins verified by the planning thread on 2026-09-30 against
+# https://fly.io/docs/flyctl/deploy/ (--app, --image-label, --ha, --remote-only),
+# https://github.com/superfly/flyctl-actions (tag 1.6 = ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1),
+# https://github.com/actions/checkout (v7.0.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1), and
+# https://docs.github.com/en/rest/checks/runs (check-runs response shape, per_page max 100).
+# The builder never edits this file (AGENTS.md section 1).
 
 name: Deploy API
 
-# Release is a separate decision from merge (review finding 8, 2026-09-26): this workflow runs
-# only when Elias starts it by hand and names the commit to release. It never runs on push.
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "The exact commit or tag to release (must have a green CI run)"
+        description: "The exact 40-character commit id to release (must be on main with green CI)"
         required: true
 
+permissions:
+  contents: read
+  checks: read
+
 concurrency:
-  group: deploy-api-${{ github.ref }}
+  group: deploy-api
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_REF: ${{ github.event.inputs.ref }}
+      FLY_APP: petasos-api
+      API_URL: https://api.petasos.io
     steps:
-      - uses: actions/checkout@v4
+      - name: Require an exact commit id
+        run: |
+          if ! printf '%s' "$RELEASE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "ref must be a full 40-character lowercase commit id; got: $RELEASE_REF"
+            exit 1
+          fi
+          echo "IMAGE_LABEL=sha-${RELEASE_REF:0:12}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      - name: Require the commit to be on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$RELEASE_REF" origin/main; then
+            echo "$RELEASE_REF is not on main; only merged commits are released"
+            exit 1
+          fi
+
+      - name: Require green CI on that commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_REF}/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.status == "completed") | "\(.name) \(.conclusion)"' \
+            > check-runs.txt
+          cat check-runs.txt
+          for name in python demo private-identifiers; do
+            if ! grep -Eq "^${name} success$" check-runs.txt; then
+              echo "check '${name}' has no successful completed run on ${RELEASE_REF}"
+              exit 1
+            fi
+          done
 
       - name: Set up flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1  # 1.6
+        with:
+          version: 0.4.110
 
-      - name: Deploy to Fly.io
-        run: flyctl deploy --remote-only
+      - name: Deploy to Fly.io (one machine)
+        timeout-minutes: 15
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --app "$FLY_APP" --image-label "$IMAGE_LABEL" --ha=false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0, as ci.yml
+        with:
+          python-version: "3.12"
+
+      - name: Prove the release (health check and one refund journey)
+        id: smoke
+        timeout-minutes: 5
+        run: |
+          uv sync --locked --no-dev
+          set +e
+          uv run --locked --no-dev python scripts/smoke_journey.py "$API_URL" | tee smoke.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "SMOKE_RESULT=confirmed" >> "$GITHUB_ENV" ;;
+            3) echo "SMOKE_RESULT=health ok; demo at capacity, journey not run (warning)" >> "$GITHUB_ENV"
+               echo "::warning::demo at capacity: health passed, the refund journey did not run" ;;
+            *) echo "SMOKE_RESULT=FAILED (exit $code)" >> "$GITHUB_ENV"; exit "$code" ;;
+          esac
+
+      - name: Write the release summary
+        if: always()
+        run: |
+          {
+            echo "## Deploy API"
+            echo ""
+            echo "- Commit: \`$RELEASE_REF\`"
+            echo "- Image label: \`$IMAGE_LABEL\`"
+            echo "- Smoke journey: ${SMOKE_RESULT:-not run}"
+            echo ""
+            echo '```'
+            cat smoke.txt 2>/dev/null || echo "(no smoke output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

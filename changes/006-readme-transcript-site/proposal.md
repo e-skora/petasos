@@ -2,7 +2,7 @@
 
 status: proposed
 lane: claude (Cowork writes the prose)
-depends_on: 004-owner-api-and-demo-app, 005-deploy-fly-cloudflare
+depends_on: 004-owner-api, 005-deploy-fly-cloudflare, 007-demo-app
 decisions: D-001, D-002
 
 ## Why

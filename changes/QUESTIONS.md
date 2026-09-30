@@ -17,3 +17,7 @@ These are recorded here so no builder reopens them. Only question 2 is still ope
 2. Still open, needed by change 004 or 005: where the demo app is served (`petasos.io/demo` or `app.petasos.io`). No change before 004 depends on it.
 3. Settled: Codex reviews every builder pull request (D-006, D-015). Changes 007 and 008, the stretch builds proposed for Codex, are out of v1 (D-016).
 4. Settled and superseded: no human merges builds; the merge gate does (D-015).
+
+## 2026-09-30 (Cowork planning thread): question 2 settled
+
+2. Settled: the demo app is served at `petasos.io/demo/` from the one Cloudflare Pages project (`deploy-site.yml` already copies `demo/dist` into `site/demo`), and the API's allowed browser origins are `https://petasos.io` and `https://www.petasos.io` plus Vite's local dev server (change 004 spec 4.3). Decided by the planning thread under Elias's standing "use best recommendations on the decisions" (2026-09-26), and bound by the 004 and 007 specs once ratified.
