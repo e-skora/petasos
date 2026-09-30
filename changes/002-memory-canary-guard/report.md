@@ -16,9 +16,9 @@ the entry expires and is swept away, or is overwritten by a fresh entry with a n
 id, the old token stays registered and still trips the guard. There is still no MCP
 server, no help-desk tool, and no demo app wiring this guard to a real outgoing
 response: that is change 003.
-Commit: f2eb1c1cdf971858e842f5b0584037b596b1768d on branch build/002-memory-canary-guard
+Commit: e3b7b68416609669973c3232ac51cf7833b8a4ed on branch build/002-memory-canary-guard
 Tests: CI run pending; see pull request checks for commit
-f2eb1c1cdf971858e842f5b0584037b596b1768d. Local count 313 passed / 0 failed, 1
+e3b7b68416609669973c3232ac51cf7833b8a4ed. Local count 316 passed / 0 failed, 1
 skipped (the private-identifier gate, which only runs where the `PRIVATE_DENYLIST`
 secret is set) at the same commit. `uv run ruff check .` and `uv run ruff format
 --check .` both pass clean at the same commit. `uv pip check` reports all installed
@@ -41,5 +41,20 @@ Changed files:
 Deviations from spec: none.
 Dependencies changed: none. `uv pip check` result: all installed packages compatible.
 Flags: none.
-Review findings and disposition: none yet; filled in after review.
+Review findings and disposition:
+- blocker | src/petasos/memory/guard.py:88-111 | Dict keys that are not str/bytes
+  (e.g. a tuple or frozenset) were silently skipped by the guard's scan, never
+  scanned for a canary and never routed to the guard_error path, letting a canary
+  hidden in a dict key escape detection: fixed in e3b7b68416609669973c3232ac51cf7833b8a4ed
+  (unsupported key types now raise, landing in the same guard_error path as
+  unsupported value types).
+- should-fix | src/petasos/memory/guard.py:103-107 | Bytes dict keys were scanned
+  for canaries but never checked against the private-key label, unlike str keys:
+  fixed in e3b7b68416609669973c3232ac51cf7833b8a4ed (bytes keys are decoded once and
+  checked against the same private-key rule as str keys).
+- nit | tests/test_memory_canary.py:150 | The put_in-based test for acceptance
+  test 9 only exercised the rollback path, never the successful-commit outcome:
+  fixed in e3b7b68416609669973c3232ac51cf7833b8a4ed (added a parametrized test
+  mirroring the put()-based one, asserting the new id, tier, fresh canary, and
+  live old token for a committed put_in overwrite).
 Open questions appended to QUESTIONS.md: none.
