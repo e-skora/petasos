@@ -70,6 +70,14 @@ def test_private_labelled_keys(key: str, expect_hit: bool) -> None:
         assert hit is None
 
 
+def test_private_labelled_bytes_key() -> None:
+    registry = canary_set([])
+    hit = scan({b"private_note": ""}, registry)
+    assert hit is not None
+    assert hit.kind == "private_key"
+    assert hit.key == "private_note"
+
+
 def test_assert_no_private_payload_raises_with_the_hit_and_a_plain_sentence() -> None:
     registry = canary_set([])
     with pytest.raises(GuardTripped) as excinfo:
@@ -99,6 +107,10 @@ def test_unsupported_type_deep_nesting_and_broken_iteration_are_guard_errors() -
 
     hit = scan(BadDict(a=1), registry)
     assert hit is not None and hit.kind == "guard_error"
+
+    for bad_key in ((1, 2), frozenset({1, 2})):
+        hit = scan({bad_key: "value"}, registry)
+        assert hit is not None and hit.kind == "guard_error"
 
     assert scan("safe payload", registry) is None
 

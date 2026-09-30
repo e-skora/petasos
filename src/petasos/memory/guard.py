@@ -102,9 +102,19 @@ def _walk(obj: object, canaries: CanarySet, counters: _Counters, depth: int) -> 
                         )
                 elif isinstance(key, bytes):
                     _count_text(counters, len(key))
-                    hit = _scan_text(key.decode("utf-8", errors="replace"), canaries)
+                    decoded_key = key.decode("utf-8", errors="replace")
+                    hit = _scan_text(decoded_key, canaries)
                     if hit is not None:
                         return hit
+                    if _is_private_key(decoded_key):
+                        return Hit(
+                            kind="private_key",
+                            token=None,
+                            key=decoded_key,
+                            detail=_SENTENCES["private_key"],
+                        )
+                else:
+                    raise _BoundExceeded(f"unsupported payload key type: {type(key).__name__}")
                 hit = _walk(value, canaries, counters, depth + 1)
                 if hit is not None:
                     return hit

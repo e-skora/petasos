@@ -147,6 +147,35 @@ def test_overwriting_an_expired_t4_entry_gets_a_new_id_and_keeps_the_old_token_l
     assert looked_up == (original.id, "s1")
 
 
+@pytest.mark.parametrize("new_tier", [MemoryTier.T0, MemoryTier.T4])
+def test_overwriting_an_expired_t4_entry_via_put_in_commits_new_entry(
+    tmp_sqlite: Path, frozen_clock, new_tier
+) -> None:
+    db = _db(tmp_sqlite)
+    store = MemoryStore(db, scope="s1", clock=frozen_clock)
+    expires_at = frozen_clock() + timedelta(seconds=1)
+    original = store.put("k", "will expire", MemoryTier.T4, expires_at=expires_at)
+    frozen_clock.advance(1)
+
+    with db.transaction() as conn:
+        replacement = store.put_in(conn, "k", "fresh text", new_tier)
+
+    assert replacement.id != original.id
+    assert replacement.tier == new_tier
+    if new_tier == MemoryTier.T4:
+        assert replacement.canary is not None
+        assert replacement.canary != original.canary
+    else:
+        assert replacement.canary is None
+
+    with db.transaction() as conn:
+        registry = all_canaries(conn)
+        looked_up = canary_entry(conn, original.canary)
+    assert original.canary in registry
+    assert scan({"leak": original.canary}, registry) is not None
+    assert looked_up == (original.id, "s1")
+
+
 def test_overwriting_an_expired_t4_entry_via_put_in_rolls_back_together(
     tmp_sqlite: Path, frozen_clock
 ) -> None:
