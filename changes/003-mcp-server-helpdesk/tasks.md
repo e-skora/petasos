@@ -3,10 +3,10 @@
 Each task names the acceptance test numbers from `spec.md` section 3 it satisfies. Tick
 `- [ ]` to `- [x]` in the same commit that completes it.
 
-- [ ] Write `helpdesk/data.py`: `HELPDESK_SCHEMA`, the seed constants (fictional only; texts carry the
+- [x] Write `helpdesk/data.py`: `HELPDESK_SCHEMA`, the seed constants (fictional only; texts carry the
       scope so two sessions differ), `seed_session`, scope-bound ticket reads, `current_version`, and the
       version-bump helper (spec 3.11 to 3.13, 3.18).
-- [ ] Write `helpdesk/fake_email.py` and `helpdesk/fake_payments.py` (grant-keyed rows, never send or
+- [x] Write `helpdesk/fake_email.py` and `helpdesk/fake_payments.py` (grant-keyed rows, never send or
       move anything; docstrings say so) and `helpdesk/tools.py` with `ReadCapture`, the six
       `ToolDefinition`s as closures over the scope and the capture, and `build_registry` (spec 3.5a,
       3.8, 3.14 to 3.17). Test against a `Gate` directly. Satisfies acceptance tests 11, the capture
