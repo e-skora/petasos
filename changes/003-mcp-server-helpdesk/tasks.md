@@ -16,7 +16,7 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       `sessions/visitor.py` (`session_routes`) (spec 3.19 to 3.22); add both schemas to
       `Database.migrate()` and update the table-list test. Satisfies the store-level halves of
       acceptance tests 21 to 24.
-- [ ] Write `mcp/identity.py` (`Identity`, `ClientRegistry.authenticate` with the dummy-digest compare),
+- [x] Write `mcp/identity.py` (`Identity`, `ClientRegistry.authenticate` with the dummy-digest compare),
       rewrite `mcp/middleware.py` for the registry, per-request identity, and the session bindings
       (absent binding refused; removed on DELETE, expiry, eviction), and write `mcp/outcomes.py`
       (spec 3.1 to 3.3, 3.24). Satisfies acceptance tests 1, 3, 4, and the sentences half of 25.
