@@ -1,7 +1,7 @@
 # Plan: 002-memory-canary-guard
 
-grounded_at: (set by the planning thread when this change is ratified, to the `main` commit
-of that moment; the builder checks it and never fills it in)
+grounded_at: `7a5a538` (the `main` commit after the specs review PR #17 merged, 2026-09-29; the
+planning thread set this value at ratification, and the builder only checks it)
 
 lane: claude
 
