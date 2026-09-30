@@ -20,7 +20,7 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       rewrite `mcp/middleware.py` for the registry, per-request identity, and the session bindings
       (absent binding refused; removed on DELETE, expiry, eviction), and write `mcp/outcomes.py`
       (spec 3.1 to 3.3, 3.24). Satisfies acceptance tests 1, 3, 4, and the sentences half of 25.
-- [ ] Write `mcp/tools.py` (`GateFactory.for_call`, `result_json`, `tool_result`, the typed adapters, one
+- [x] Write `mcp/tools.py` (`GateFactory.for_call`, `result_json`, `tool_result`, the typed adapters, one
       `ReadCapture` per call), the `ServerMiddleware` for tool visibility, the raw argument shape check,
       the call quota, and the `isError` refusal envelope, and extend `build_mcp_server(db=, clock=)` in
       `mcp/server.py` to register every tool (spec 3.4 to 3.8, 3.15, 3.21).
