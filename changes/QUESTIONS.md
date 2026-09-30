@@ -14,6 +14,6 @@ Append-only for agents. Elias answers by deleting the entry (and adding a decisi
 These are recorded here so no builder reopens them. Only question 2 is still open.
 
 1. Settled: the repository is public `e-skora/petasos`, cloned at `~/code/Petasos` (D-005).
-2. Still open, needed by change 004 or 005: where the demo app is served (`petasos.io/demo` or `app.petasos.io`). No change before 004 depends on it.
+2. Settled 2026-09-30 (Cowork planning thread, under Elias's standing "use best recommendations on the decisions" of 2026-09-26): the demo app is served at `petasos.io/demo/` from the one Cloudflare Pages project (`deploy-site.yml` already copies `demo/dist` into `site/demo`), and the API's allowed browser origins are `https://petasos.io` and `https://www.petasos.io` plus Vite's local dev server (change 004 spec 4.3, change 007 spec 7.1).
 3. Settled: Codex reviews every builder pull request (D-006, D-015). Changes 007 and 008, the stretch builds proposed for Codex, are out of v1 (D-016).
 4. Settled and superseded: no human merges builds; the merge gate does (D-015).
