@@ -12,7 +12,7 @@ This verdict reviews planning documents. It does not claim the unbuilt features 
 
 ## Exact scope and evidence
 
-- Repository: `e-skora/petasos`, verified clone at `/Users/frank/code/Petasos-GPTreviewer/petasos`; clean starting checkout on `review/specs-002-003`, review commit `edf9b4f215206d5fbd138698a09e3831778f2547`.
+- Repository: `e-skora/petasos`, verified in the reviewer's own local clone; clean starting checkout on `review/specs-002-003`, review commit `edf9b4f215206d5fbd138698a09e3831778f2547`.
 - Main and PR comparison base: `e61705a2ff98d5ce457c24839413430b94c03286`.
 - Reviewed PR: [#16](https://github.com/e-skora/petasos/pull/16), branch `planning/specs-002-003`, head `ab7ee6ce53b86473c88b85740a66e001cccb9d37`. GitHub confirmed it was open at that exact base and head.
 - Correction comparison: first-pass head `348a03bfa85be19618828354131636bb33a67bf1` to the reviewed head. Both the full PR and correction diff contain exactly the six 002/003 spec, plan, and task files plus ARCHITECTURE.md. The architecture changes are version 0.3 and the narrow approval-verb exception in invariant 1. Source, dependency pins, proposals, and decisions did not change.
