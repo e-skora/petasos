@@ -91,7 +91,7 @@ def test_assert_no_private_payload_raises_with_the_hit_and_a_plain_sentence() ->
 def test_unsupported_type_deep_nesting_and_broken_iteration_are_guard_errors() -> None:
     registry = canary_set([])
 
-    for bad in ({1, 2, 3}, datetime.now(UTC), object()):
+    for bad in ({1, 2, 3}, datetime(2026, 1, 1, tzinfo=UTC), object()):
         hit = scan(bad, registry)
         assert hit is not None and hit.kind == "guard_error"
 

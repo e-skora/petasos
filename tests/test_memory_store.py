@@ -5,7 +5,7 @@ tests 3, 8, 13 to 16).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -189,6 +189,21 @@ def test_expiry_boundary_hides_the_entry_from_read_and_search(
     frozen_clock.advance(1)
     assert store.read("k", ceiling=MemoryTier.T1) is None
     assert store.search("text", ceiling=MemoryTier.T1) == []
+    assert _count(db, "memory_entries") == 0
+
+
+def test_sweep_compares_expiry_across_differing_utc_offsets(tmp_sqlite: Path, frozen_clock) -> None:
+    db = _db(tmp_sqlite)
+    store = MemoryStore(db, scope="s1", clock=frozen_clock)
+    store.put("k", "text", MemoryTier.T1, expires_at=frozen_clock() + timedelta(minutes=30))
+    frozen_clock.advance(3600)
+    same_instant_other_offset = MemoryStore(
+        db,
+        scope="s1",
+        clock=lambda: frozen_clock().astimezone(timezone(timedelta(hours=-1))),
+    )
+
+    assert same_instant_other_offset.read("k", ceiling=MemoryTier.T1) is None
     assert _count(db, "memory_entries") == 0
 
 

@@ -222,6 +222,24 @@ def test_reading_a_t4_entry_and_putting_its_text_back_stores_one_marker(
     assert put_back.text.count(marker_for(original.canary)) == 1
 
 
+def test_reading_a_t4_entry_and_putting_its_text_back_through_put_in_stores_one_marker(
+    tmp_sqlite: Path, frozen_clock
+) -> None:
+    db = _db(tmp_sqlite)
+    store = MemoryStore(db, scope="s1", clock=frozen_clock)
+    original = store.put("k", "x" * 8192, MemoryTier.T4)
+    assert len(original.text) == 8192 + 32
+
+    read_back = store.read("k", ceiling=MemoryTier.T4)
+    with db.transaction() as conn:
+        put_back = store.put_in(conn, "k", read_back.text, MemoryTier.T4)
+
+    assert put_back.canary == original.canary
+    assert put_back.text == original.text
+    assert len(put_back.text) == 8224
+    assert put_back.text.count(marker_for(original.canary)) == 1
+
+
 def test_a_swept_t4_entrys_canary_outlives_it(tmp_sqlite: Path, frozen_clock) -> None:
     db = _db(tmp_sqlite)
     store = MemoryStore(db, scope="s1", clock=frozen_clock)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import sqlite3
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from functools import total_ordering
 from typing import TYPE_CHECKING
@@ -91,6 +91,13 @@ _SELECT_BY_KEY = (
 )
 
 
+def _utc_iso(dt: datetime) -> str:
+    """Normalize to UTC before formatting so stored and compared timestamps
+    sort lexically in chronological order regardless of the offset a caller used.
+    """
+    return dt.astimezone(UTC).isoformat()
+
+
 def _row_to_entry(row: sqlite3.Row) -> Entry:
     return Entry(
         id=row["id"],
@@ -121,7 +128,7 @@ class MemoryStore:
         now = self._clock()
         conn.execute(
             "DELETE FROM memory_entries WHERE scope=? AND expires_at IS NOT NULL AND expires_at<=?",
-            (self._scope, now.isoformat()),
+            (self._scope, _utc_iso(now)),
         )
 
     def sweep(self) -> None:
@@ -173,7 +180,7 @@ class MemoryStore:
         if len(stripped) > _MAX_TEXT_LEN:
             raise InvalidEntry(f"text must be at most {_MAX_TEXT_LEN} characters")
 
-        expires_at_s = expires_at.isoformat() if expires_at is not None else None
+        expires_at_s = _utc_iso(expires_at) if expires_at is not None else None
 
         if live:
             entry_id = row["id"]
