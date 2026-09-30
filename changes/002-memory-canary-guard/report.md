@@ -16,9 +16,9 @@ the entry expires and is swept away, or is overwritten by a fresh entry with a n
 id, the old token stays registered and still trips the guard. There is still no MCP
 server, no help-desk tool, and no demo app wiring this guard to a real outgoing
 response: that is change 003.
-Commit: e3b7b68416609669973c3232ac51cf7833b8a4ed on branch build/002-memory-canary-guard
+Commit: 266dd4fde5ce07c02bb8e5c58aa67bb91f07d80f on branch build/002-memory-canary-guard
 Tests: CI run pending; see pull request checks for commit
-e3b7b68416609669973c3232ac51cf7833b8a4ed. Local count 316 passed / 0 failed, 1
+266dd4fde5ce07c02bb8e5c58aa67bb91f07d80f. Local count 318 passed / 0 failed, 1
 skipped (the private-identifier gate, which only runs where the `PRIVATE_DENYLIST`
 secret is set) at the same commit. `uv run ruff check .` and `uv run ruff format
 --check .` both pass clean at the same commit. `uv pip check` reports all installed
@@ -57,4 +57,32 @@ Review findings and disposition:
   fixed in e3b7b68416609669973c3232ac51cf7833b8a4ed (added a parametrized test
   mirroring the put()-based one, asserting the new id, tier, fresh canary, and
   live old token for a committed put_in overwrite).
+- blocker (Codex P1) | src/petasos/memory/store.py:120-124 | `_sweep_in` compared
+  `expires_at` and the current time as raw ISO-8601 text in SQL; a stored
+  `expires_at` and a `now` with different UTC offsets for the same instant do not
+  compare correctly as strings, so an already-expired entry could survive a sweep:
+  fixed in 266dd4fde5ce07c02bb8e5c58aa67bb91f07d80f (both the stored
+  `expires_at` and the value compared against in `_sweep_in` are now
+  normalized to UTC before formatting, so the text comparison matches
+  chronological order regardless of the caller's offset; a new test,
+  `test_sweep_compares_expiry_across_differing_utc_offsets`, fails without the
+  fix and passes with it).
+- P2 (Codex) | tests/test_memory_guard.py:94 | The unsupported-type test called
+  the real clock (`datetime.now(UTC)`) instead of a fixed value, against the
+  repo rule that tests use a fake clock: fixed in
+  266dd4fde5ce07c02bb8e5c58aa67bb91f07d80f (replaced with a fixed aware
+  `datetime`).
+- P2 (Codex) | tests/test_memory_canary.py:217 | The marker round-trip test only
+  covered `put`, not `put_in`, though acceptance test 10 covers both: fixed in
+  266dd4fde5ce07c02bb8e5c58aa67bb91f07d80f (added
+  `test_reading_a_t4_entry_and_putting_its_text_back_through_put_in_stores_one_marker`,
+  the same assertions run through `put_in` inside a caller transaction).
+- P2 (Codex) | src/petasos/memory/guard.py:118 and the should-fix `blocker` and
+  `should-fix` inline comments carried forward from GitHub on
+  src/petasos/memory/guard.py:108 and :121 | These comments' `original_commit_id`
+  is 683e18227b3bb228e3d83840b2abcb9aa98172c2 (the commit before the first
+  repair): GitHub carries old inline comments forward onto unchanged lines of a
+  new commit. Both were already addressed by the first repair
+  (e3b7b68416609669973c3232ac51cf7833b8a4ed), logged above; refuted as findings
+  against this head commit because they are not new.
 Open questions appended to QUESTIONS.md: none.
