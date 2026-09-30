@@ -1,8 +1,8 @@
 # Plan: 003-mcp-server-helpdesk
 
-grounded_at: (set by the planning thread after change 002 has merged, to the `main` commit
-of that moment; the builder checks it and never fills it in. This change cannot be claimed
-until 002-memory-canary-guard has merged.)
+grounded_at: `ee9f80f` (the `main` commit that merged the 002-memory-canary-guard build, PR #19,
+2026-09-30; the planning thread checked the merged 002 interface against this spec and set this
+value at ratification; the builder only checks it)
 
 lane: claude
 
