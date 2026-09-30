@@ -1,6 +1,6 @@
 # Proposal: 002-memory-canary-guard
 
-status: proposed
+status: ratified
 lane: claude
 depends_on: 001-trust-core (uses its `storage.Database`)
 decisions: D-001, D-003
