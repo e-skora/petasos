@@ -30,10 +30,10 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       tested through the real MCP client: error code, sentence, and `error.data.status`), the route label,
       the ledger row and counter in one transaction, the no-recursion failure path) (spec 3.9, 3.10).
       Satisfies acceptance tests 15 to 20.
-- [ ] Rewrite `app.py` to `create_app(db, clock=)` with the middleware order in 3.23 and `main` reading
+- [x] Rewrite `app.py` to `create_app(db, clock=)` with the middleware order in 3.23 and `main` reading
       `PETASOS_DB` only under `__main__`; rewrite `tests/test_app_mcp.py` for the new signature keeping
       its five checks (tool list "contains `ping`"); update the package `__init__` exports (spec section 2, 3.23, 3.26). Satisfies the
       HTTP halves of acceptance tests 21 to 24, plus 27, 28, and the reader test 29.
-- [ ] Run `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`, `uv pip check`,
+- [x] Run `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`, `uv pip check`,
       `uv run pytest`; freeze a commit; review the diff against every acceptance test; run the wall
       check; write `report.md`; open the pull request.
