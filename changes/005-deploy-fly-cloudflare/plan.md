@@ -33,8 +33,9 @@ edited, and the module is imported by its full name. `scripts/` is a new folder.
 ticking boxes only.
 
 wall_forbidden: everything standing-forbidden in AGENTS.md section 1 (`.github/**` included:
-the deploy workflow was rewritten by the planning thread in the same pull request as this
-plan; the builder reads it and builds what it calls, never edits it), plus:
+the deploy workflow and its release gate `.github/scripts/release_gate.py`, with
+`tests/test_release_gate.py`, were written by the planning thread in the same pull request as
+this plan; the builder reads them and builds what the workflow calls, never edits them), plus:
 - `src/petasos/app.py`
 - `src/petasos/owner/**`
 - `src/petasos/mcp/**`
@@ -131,8 +132,8 @@ smoke journey fail closed if anything is missing.
 3. `serve.py` (spec 5.1): settings, `SettingsError`, `build_app`, `main`, `--check`. Spec
    tests 1, 2, 14.
 4. `scripts/smoke_journey.py` (spec 5.10), importable, with `tests/test_smoke_journey.py`
-   driving `run_journey` through `httpx2.ASGITransport` and the in-process MCP client (spec
-   test 11).
+   driving `run_journey` through `httpx2.ASGITransport` and the in-process MCP client, plus a
+   stand-in `GET /owner/tickets/3` route built in the test for the receipt step (spec test 11).
 5. `Dockerfile`, `.dockerignore`, `fly.toml` (spec 5.2, 5.3), `docs/deploy.md` and the
    `docs/setup.md` rewrite (spec 5.11, 5.12), and `tests/test_deploy_files.py` (spec tests 12,
    13). The reader test 16 last.

@@ -10,7 +10,8 @@
 # https://fly.io/docs/flyctl/deploy/ (--app, --image-label, --ha, --remote-only),
 # https://github.com/superfly/flyctl-actions (tag 1.6 = ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1),
 # https://github.com/actions/checkout (v7.0.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1), and
-# https://docs.github.com/en/rest/checks/runs (check-runs response shape, per_page max 100).
+# https://docs.github.com/en/rest/actions/workflow-runs and /rest/actions/workflow-jobs (the
+# runs-by-workflow and jobs-by-run endpoints the release gate reads, per_page max 100).
 # The builder never edits this file (AGENTS.md section 1).
 
 name: Deploy API
@@ -24,7 +25,7 @@ on:
 
 permissions:
   contents: read
-  checks: read
+  actions: read
 
 concurrency:
   group: deploy-api
@@ -60,20 +61,23 @@ jobs:
             exit 1
           fi
 
-      - name: Require green CI on that commit
+      - name: Require green CI on that commit (release gate)
+        # .github/scripts/release_gate.py, tested by tests/test_release_gate.py: the newest
+        # run of this repository's CI workflow at this exact commit must have succeeded, and
+        # its three jobs must each be completed with success. The script reads only the two
+        # files fetched here.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_REF}/check-runs?per_page=100" \
-            --jq '.check_runs[] | select(.status == "completed") | "\(.name) \(.conclusion)"' \
-            > check-runs.txt
-          cat check-runs.txt
-          for name in python demo private-identifiers; do
-            if ! grep -Eq "^${name} success$" check-runs.txt; then
-              echo "check '${name}' has no successful completed run on ${RELEASE_REF}"
-              exit 1
-            fi
-          done
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${RELEASE_REF}&per_page=100" \
+            > runs.json
+          run_id="$(python3 .github/scripts/release_gate.py select-run --sha "$RELEASE_REF" --workflow CI runs.json)"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+            > jobs.json
+          python3 .github/scripts/release_gate.py check-jobs --require python,demo,private-identifiers jobs.json
+          echo "CI run ${run_id} is green on ${RELEASE_REF}"
 
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1  # 1.6
