@@ -25,7 +25,7 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       the call quota, and the `isError` refusal envelope, and extend `build_mcp_server(db=, clock=)` in
       `mcp/server.py` to register every tool (spec 3.4 to 3.8, 3.15, 3.21).
       Satisfies acceptance tests 2, 5, 6, 7, 8, 10, 14, 26, and the MCP halves of 9, 12, 13, 23.
-- [ ] Write `mcp/guard_seam.py` (`GuardSeam(app, db, clock)`, `UNGUARDED_ROUTES`, one-unit buffering with
+- [x] Write `mcp/guard_seam.py` (`GuardSeam(app, db, clock)`, `UNGUARDED_ROUTES`, one-unit buffering with
       the byte limits, SSE framing (CRLF and LF, comment events, zero-unit streams), the live canary set, the 409 first-unit path and the `event: message` later-unit termination (both
       tested through the real MCP client: error code, sentence, and `error.data.status`), the route label,
       the ledger row and counter in one transaction, the no-recursion failure path) (spec 3.9, 3.10).
