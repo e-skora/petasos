@@ -203,6 +203,16 @@ async def test_sse_first_event_hit_is_a_409(db, frozen_clock) -> None:
     assert token.encode() not in joined
 
 
+async def test_sse_canary_in_id_line_still_trips_the_guard(db, frozen_clock) -> None:
+    token = _mint_canary(db, frozen_clock, scope="s1")
+    raw = f'id: {token}\r\ndata: {{"ok": true}}\r\n\r\n'.encode()
+    app = _make_app(_sse_messages(raw))
+    sent = await _run(app, db, frozen_clock, _scope("/mcp"))
+    assert sent[0]["status"] == 409
+    joined = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    assert token.encode() not in joined
+
+
 async def test_sse_later_event_hit_terminates_with_event_message(db, frozen_clock) -> None:
     token = _mint_canary(db, frozen_clock, scope="s1")
     clean_event = b'event: message\r\ndata: {"ok": true}\r\n\r\n'
@@ -220,7 +230,7 @@ async def test_sse_later_event_hit_terminates_with_event_message(db, frozen_cloc
     assert sent[-1]["more_body"] is False
 
 
-@pytest.mark.parametrize("split", [0, 3, 8, 15, 22])
+@pytest.mark.parametrize("split", range(26))
 async def test_sse_canary_split_across_chunks_is_still_caught(db, frozen_clock, split) -> None:
     token = _mint_canary(db, frozen_clock, scope="s1")
     raw = f'data: {{"leak": "{token}"}}\r\n\r\n'.encode()

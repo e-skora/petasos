@@ -187,11 +187,40 @@ def _effect_get_ticket(capture: ReadCapture) -> Callable[[sqlite3.Connection, An
     def effect(conn: sqlite3.Connection, record: Any, grant_key: str) -> str:
         number = record.arguments["ticket"]
         row = conn.execute(
-            "SELECT number, customer, email, subject, body, status, amount_minor, currency, version "
-            "FROM tickets WHERE scope=? AND number=?",
+            "SELECT id, number, customer, email, subject, body, status, amount_minor, "
+            "currency, version FROM tickets WHERE scope=? AND number=?",
             (record.scope, number),
         ).fetchone()
-        capture.data = dict(row) if row is not None else None
+        if row is None:
+            capture.data = None
+            return "executed"
+        ticket = dict(row)
+        ticket_id = ticket.pop("id")
+        ticket["notes"] = [
+            dict(note_row)
+            for note_row in conn.execute(
+                "SELECT author, text, created_at FROM notes "
+                "WHERE scope=? AND ticket_id=? ORDER BY id",
+                (record.scope, ticket_id),
+            ).fetchall()
+        ]
+        ticket["mail"] = [
+            dict(mail_row)
+            for mail_row in conn.execute(
+                "SELECT to_address, subject, body, sent_at FROM helpdesk_fake_mail "
+                "WHERE scope=? AND ticket_id=? ORDER BY id",
+                (record.scope, ticket_id),
+            ).fetchall()
+        ]
+        ticket["refunds"] = [
+            dict(refund_row)
+            for refund_row in conn.execute(
+                "SELECT amount_minor, currency, refunded_at FROM helpdesk_fake_refunds "
+                "WHERE scope=? AND ticket_id=? ORDER BY id",
+                (record.scope, ticket_id),
+            ).fetchall()
+        ]
+        capture.data = ticket
         return "executed"
 
     return effect

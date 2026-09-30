@@ -223,7 +223,8 @@ class GuardSeam:
 
             raw_event = bytes(state.buffer[:boundary])
             del state.buffer[:boundary]
-            hit = self._scan_unit(_event_data_text(raw_event))
+            full_text = raw_event.decode("utf-8", errors="replace")
+            hit = self._scan_unit(full_text, json_text=_event_data_text(raw_event))
             if hit is not None:
                 await self._emit_hit(scope, send, state, hit)
                 return
@@ -267,14 +268,18 @@ class GuardSeam:
             )
         state.terminated = True
 
-    def _scan_unit(self, text: str) -> Hit | None:
+    def _scan_unit(self, text: str, json_text: str | None = None) -> Hit | None:
+        """Scans `text` as a plain string first, so a canary anywhere in it (including
+        SSE framing outside the `data:` field) is caught even though it is not valid
+        JSON, then separately parses `json_text` (or `text` when absent) to catch a
+        canary or private key nested inside its JSON structure (spec 3.9)."""
         try:
             canaries = self._canary_cache.current()
             hit = guard_scan(text, canaries)
             if hit is not None:
                 return hit
             try:
-                parsed = json.loads(text)
+                parsed = json.loads(json_text if json_text is not None else text)
             except (json.JSONDecodeError, ValueError):
                 return None
             if not isinstance(parsed, (dict, list)):

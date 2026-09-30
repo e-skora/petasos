@@ -56,6 +56,45 @@ def test_get_ticket_returns_the_body_including_the_hidden_ticket(db, frozen_cloc
     assert "cn-" in capture2.data["body"]
 
 
+def test_get_ticket_includes_notes_mail_and_refunds(db, frozen_clock) -> None:
+    gate, capture = _gate(db, frozen_clock)
+    seeded = gate.propose("get_ticket", {"ticket": 2}, proposer=AGENT)
+    assert seeded.code == "executed"
+    assert [note["text"] for note in capture.data["notes"]] == [
+        f"Session {SCOPE}: checked with billing, no action needed yet."
+    ]
+    assert capture.data["mail"] == []
+    assert capture.data["refunds"] == []
+
+    gate.propose("add_internal_note", {"ticket": 2, "text": "second note"}, proposer=AGENT)
+
+    reply = gate.propose("reply_to_customer", {"ticket": 2, "body": "hello"}, proposer=AGENT)
+    reply_token = gate.grants.list_pending(viewer=OWNER)[0].token
+    gate.grants.approve(token=reply_token, verb="SEND-EMAIL", approver=OWNER)
+    gate.executor.run(reply.grant_id)
+
+    refund = gate.propose(
+        "issue_refund", {"ticket": 3, "amount": "42.00", "currency": "USD"}, proposer=AGENT
+    )
+    refund_token = gate.grants.list_pending(viewer=OWNER)[0].token
+    gate.grants.approve(token=refund_token, verb="ISSUE-REFUND", approver=OWNER)
+    gate.executor.run(refund.grant_id)
+
+    gate2, capture2 = _gate(db, frozen_clock)
+    gate2.propose("get_ticket", {"ticket": 2}, proposer=AGENT)
+    assert [note["text"] for note in capture2.data["notes"]] == [
+        f"Session {SCOPE}: checked with billing, no action needed yet.",
+        "second note",
+    ]
+    assert len(capture2.data["mail"]) == 1
+    assert capture2.data["mail"][0]["body"] == "hello"
+
+    gate3, capture3 = _gate(db, frozen_clock)
+    gate3.propose("get_ticket", {"ticket": 3}, proposer=AGENT)
+    assert len(capture3.data["refunds"]) == 1
+    assert capture3.data["refunds"][0]["amount_minor"] == 4200
+
+
 def test_add_internal_note_executes_directly_and_bumps_version(db, frozen_clock) -> None:
     gate, before_capture = _gate(db, frozen_clock)
     gate.propose("get_ticket", {"ticket": 1}, proposer=AGENT)
