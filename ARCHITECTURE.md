@@ -1,6 +1,6 @@
 # ARCHITECTURE.md: how Petasos is built
 
-Status: PROPOSED, version 0.3 (2026-09-29: invariant 1 reworded for the approval comparison, per `review/2026-09-27-specs-002-003.md` finding 6; 2026-09-26: sections 2 to 7 and 9 rewritten for D-015, D-016, D-017). Binding once ratified. Live code beats this document; when they disagree, fix one of them in the same PR and bump the version here.
+Status: PROPOSED, version 0.4 (2026-09-30: package layout, invariants 1, 15, 16, and sections 6 and 7 aligned with the specs for changes 004, 005, and 007, written by the planning thread; 2026-09-29: invariant 1 reworded for the approval comparison, per `review/2026-09-27-specs-002-003.md` finding 6; 2026-09-26: sections 2 to 7 and 9 rewritten for D-015, D-016, D-017). Binding once ratified. Live code beats this document; when they disagree, fix one of them in the same PR and bump the version here.
 
 Plain-language rule: every term is defined the first time it appears. If you find one that is not, that is a bug in this document.
 
@@ -69,6 +69,7 @@ src/petasos/
     middleware.py    # ASGI: 401 before the MCP handshake; refuse any Origin header
     server.py        # streamable HTTP at /mcp as an exact Route (not a Mount)
     tools.py         # adapters: MCP tool call -> Gate.propose
+    service.py       # the call logic both front doors share: shape check, role tool sets, the card, approve-then-run (004)
     guard_seam.py    # the ONE place responses are scanned; UNGUARDED_ROUTES enumerated
   helpdesk/
     data.py          # fictional tickets with resource versions, per-session namespaces, the canary ticket
@@ -77,10 +78,23 @@ src/petasos/
     fake_payments.py # records refunds; never moves money
   sessions/
     visitor.py       # mint a visitor session: three identities, a namespace, one-hour life
+    store.py         # SessionStore: mint in one transaction, expire (the delete order for a namespace)
+    quotas.py        # per-session quotas and the global abuse counters
+    maintenance.py   # the maintenance tick: expire, rotate the ledger, prune archives; reset (005)
   owner/
-    api.py           # browser endpoints for the demo app: tickets, propose, approvals, approve, abort, ledger
+    api.py           # browser endpoints for the demo app: me, tickets, propose, approvals, approve, abort, ledger, verify
+    auth.py          # bearer to identity for /owner/*, written where the guard seam reads it
+    origins.py       # the origin gate: allowed browser origins, preflight, cross-origin headers
+    reads.py         # scoped reads of ticket activity and ticket names for cards (a documented cross-package read, like sessions/store.py's expire)
+    cards.py         # the owner card: the MCP card plus customer, subject, and a plain summary
+    ledger_view.py   # a session's ledger rows rendered as roles and plain sentences
+    outcomes.py      # the owner API's own result codes and sentences
+  limits.py          # request size bound, outermost in the deployed process (005)
+  serve.py           # the entrypoint: settings from the environment, migrate, compose, uvicorn (005)
   app.py             # composition root: builds everything, mounts routes, owns lifespan
-demo/                # Preact + Vite app (served from petasos.io)
+scripts/
+  smoke_journey.py   # the release check: mint, propose, approve, execute once, over MCP (005)
+demo/                # Preact + Vite app (served at petasos.io/demo/, change 007)
 site/                # static site
 tests/
   test_no_private_identifiers.py   # reads the denylist from the PRIVATE_DENYLIST secret; fails in CI without it
@@ -110,7 +124,7 @@ Every response on the way out passes the **guard seam** exactly once.
 
 ## 5. Invariants (each one is a test)
 
-1. The risk profile type has no tier field, and no caller-facing entry point accepts risk facts, a tier, a verb, or an approver from request content. The one exception is narrow: an authorized approval entry point (`GrantStore.approve` and the owner's `approve` tool) accepts a claimed verb solely to compare it with the verb stored on the grant, burning the grant on a mismatch (section 4, step 9); it never sets or selects a verb, a tier, a record, or an approver.
+1. The risk profile type has no tier field, and no caller-facing entry point accepts risk facts, a tier, a verb, or an approver from request content. The one exception is narrow: an authorized approval entry point (`GrantStore.approve`, the owner's `approve` MCP tool, and the browser's `POST /owner/approve`) accepts a claimed verb solely to compare it with the verb stored on the grant, burning the grant on a mismatch (section 4, step 9); it never sets or selects a verb, a tier, a record, or an approver.
 2. `derive_tier` is pure and monotone (adding any risk flag never lowers the tier), and every valid risk profile maps to the expected tier and verb in the decision table.
 3. A grant token is never returned to the client that proposed the action.
 4. Approve is one conditional update inside one transaction; two concurrent approvals of the same token cannot both succeed; a token is unique across all grants.
@@ -124,8 +138,8 @@ Every response on the way out passes the **guard seam** exactly once.
 12. A memory entry at T4 or above carries exactly one canary for life.
 13. The guard is destination-blind: a canary in an outgoing payload aborts even for the owner.
 14. A broken guard (any exception while scanning) aborts the response rather than serving it.
-15. Exactly the routes listed in `UNGUARDED_ROUTES` skip the guard; a test enumerates every route and fails on a new exemption.
-16. Unauthenticated `/mcp` requests receive a 401 with an empty body before any MCP processing; any request with an `Origin` header is refused.
+15. Exactly the routes listed in `UNGUARDED_ROUTES` skip the guard; a test enumerates every route and fails on a new exemption. Four responses are produced outside the guard by the two layers that sit outside it, and each is a constant with no application data, pinned byte for byte by a test: the origin gate's preflight answer and its origin refusal (change 004), and the size limit's 411 and 413 (change 005). Starlette's own error page (`Internal Server Error`, a fixed text with no application data) is the one other response produced outside the seam, as change 003 already records. Nothing else bypasses the seam.
+16. Unauthenticated `/mcp` requests receive a 401 with an empty body before any MCP processing; any request with an `Origin` header is refused. (A request the size limit rejects, invariant 15, never reaches `/mcp` and gets that constant 413 or 411 instead.)
 17. Token lookup is keyed by the presented client id, so a token replayed under another id fails.
 18. Each client's memory reads are capped at its ceiling; T5 is unreachable over MCP for every identity.
 19. `list_pending_approvals`, `approve`, and `abort` are callable only by identities with the `approver` flag, which is a separate flag from "may stage".
@@ -137,12 +151,12 @@ Every response on the way out passes the **guard seam** exactly once.
 
 One SQLite file (`petasos.sqlite`, WAL mode) on one Fly volume, with clear module boundaries: `storage.py` owns connections and transactions, and each package owns its own tables (`trust`: grants and rail slots; `ledger`: the chain; `helpdesk`: tickets, notes, fake mail, fake refunds; `memory`: entries and the canary registry; `sessions`: visitor sessions). One file is what lets an effect, a grant change, and its ledger row commit together (D-016). An earlier draft split this into three files so a grant token never shared a database with tool-readable data; in one process that can open every file, the split bought no security and cost atomicity.
 
-Visitor data (tickets, notes, mail, refunds, memory, grants) lives in the visitor session's namespace and is deleted when the session expires, within the hour. The ledger is kept longer so "verify chain" has history; it can be, because no ledger row holds caller-supplied text (invariant 11). The exact retention, rotation, and reset ordering are specified in change 005.
+Visitor data (tickets, notes, mail, refunds, memory, grants) lives in the visitor session's namespace and is deleted when the session expires, within the hour: a maintenance tick inside the server process runs the expiry every minute (change 005), so nobody has to mint for it to happen. The ledger is kept longer so "verify chain" has history; it can be, because no ledger row holds caller-supplied text (invariant 11). Retention (change 005): when the ledger passes 10,000 rows, the tick moves every row into an archive file and starts the chain again from one row of kind `maintenance` that names the archive and its last hash; archives are kept 90 days and under 200 MB in total. The ledger kinds are the 001 set plus `maintenance` (a rotation or a reset). A reset expires every session and identity at once and lets the ordinary expiry delete their data in its usual order, so a reset that stops halfway is just an expiry not yet cleaned up. Two modules read other packages' tables with plain scoped SQL rather than through those packages: `sessions/store.py` (the expiry) and `owner/reads.py` and `owner/ledger_view.py` (the demo's reads); both are named here so the exception stays small.
 
 ## 7. Deployment
 
-- Fly.io app `petasos-api`, one `shared-cpu-1x` machine, 256 MB, region closest to Elias, `auto_stop_machines = false`. Health check `GET /healthz` (unauthenticated, the only such route besides `/`).
-- Cloudflare: `petasos.io` zone. `api.petasos.io` CNAME to the Fly app, proxied; a Cloudflare rate-limiting rule at the edge (100 requests/minute per IP) on top of the per-token limits in the app. `petasos.io` and `www` served by Cloudflare Pages from `site/` and `demo/dist`.
+- Fly.io app `petasos-api`, exactly one `shared-cpu-1x` machine, 256 MB, region `sjc` (San Jose; the region closest to Elias), one volume `petasos_data` at `/data` holding the SQLite file and the ledger archives, `auto_stop_machines = "off"`, and the release passes `--ha=false` so a second machine is never created. Health check `GET /healthz` (unauthenticated, the only such route). The process is `python -m petasos.serve` (change 005): one uvicorn worker, a request size limit of 64 KiB outermost, and the maintenance tick inside the process.
+- Cloudflare: `petasos.io` zone. `api.petasos.io` CNAME to the Fly app, proxied, with the certificate validated through Fly's `_fly-ownership` record and SSL mode Full (strict); one rate-limiting rule at the edge (the free plan's one rule: 30 requests per 10 seconds per IP on the API paths `/mcp`, `/owner/`, `/session`, action Block) on top of the per-session quotas in the app; the origin stays reachable at its `fly.dev` name, so the app's quotas and ceilings are the protection and the edge rule is a convenience. `petasos.io` and `www` served by Cloudflare Pages from `site/` and `demo/dist` (the demo app at `petasos.io/demo/`).
 - GitHub Actions: `ci.yml` (pytest, ruff, vitest, denylist) on every PR and on `main`; `claude-builder.yml` (scheduled, one run at a time) and `claude-mention.yml` (`@claude`); `claude-review.yml` (code-review plugin on builder PRs); `merge-gate.yml` (every 15 minutes, no model: merges a builder PR only when CI, both reviews, the report, and the file wall all pass, D-015); `deploy-api.yml` (flyctl deploy) and `deploy-site.yml` (Pages), started by hand with an exact commit, never by a merge. Codex review is configured in the Codex GitHub integration, not in the repo.
 - `main` is protected by a repository ruleset: required checks `python`, `demo`, `private-identifiers`; zero required reviews; linear history; no force push; no deletion.
 - Secrets in GitHub: `CLAUDE_CODE_OAUTH_TOKEN`, `FLY_API_TOKEN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `PRIVATE_DENYLIST`. There are no published demo tokens: a visitor mints a one-hour session with one documented command (D-017).
