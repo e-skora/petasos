@@ -105,12 +105,13 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          case "$code" in
-            0) echo "SMOKE_RESULT=confirmed" >> "$GITHUB_ENV" ;;
-            3) echo "SMOKE_RESULT=health ok; demo at capacity, journey not run (warning)" >> "$GITHUB_ENV"
-               echo "::warning::demo at capacity: health passed, the refund journey did not run" ;;
-            *) echo "SMOKE_RESULT=FAILED (exit $code)" >> "$GITHUB_ENV"; exit "$code" ;;
-          esac
+          # release_gate.py smoke-result (tested for every code): 0 confirmed; 3 and 4 continue
+          # with a warning and an unconfirmed release; anything else fails the run.
+          failed=""
+          python3 .github/scripts/release_gate.py smoke-result "$code" > smoke-result.txt || failed=1
+          cat smoke-result.txt
+          echo "SMOKE_RESULT=$(head -n 1 smoke-result.txt)" >> "$GITHUB_ENV"
+          test -z "$failed"
 
       - name: Write the release summary
         if: always()

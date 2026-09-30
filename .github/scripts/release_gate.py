@@ -23,6 +23,12 @@ Two commands:
         a non-success conclusion, or a name that appears twice with different conclusions
         exits 1 with the reason.
 
+    release_gate.py smoke-result <code>
+        Maps the smoke journey's exit code (scripts/smoke_journey.py, spec 5.10) to the
+        release outcome: prints one line for the run summary and exits 0 when the run may
+        continue (0 confirmed; 3 and 4 unconfirmed, with a workflow warning) or 1 when the
+        release failed (1, 2, or anything else).
+
 Newest means the highest `run_number` (GitHub increases it per workflow); ties are broken by
 the highest `id`.
 """
@@ -93,6 +99,24 @@ def check_jobs(document: Any, *, required: list[str]) -> tuple[bool, str]:
     return True, "all required jobs succeeded"
 
 
+SMOKE_OUTCOMES: dict[int, tuple[str, bool]] = {
+    0: ("confirmed", False),
+    3: ("health ok; demo at capacity, journey not run; release unconfirmed", True),
+    4: (
+        "journey ran; refund receipt not readable until 004 is deployed; release unconfirmed",
+        True,
+    ),
+}
+
+
+def smoke_result(code: int) -> tuple[str, bool, bool]:
+    """Return (summary line, warn, failed) for a smoke journey exit code."""
+    if code in SMOKE_OUTCOMES:
+        line, warn = SMOKE_OUTCOMES[code]
+        return line, warn, False
+    return f"FAILED (exit {code})", False, True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="release_gate.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -103,7 +127,15 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check-jobs")
     c.add_argument("--require", required=True)
     c.add_argument("jobs")
+    r = sub.add_parser("smoke-result")
+    r.add_argument("code", type=int)
     args = parser.parse_args(argv)
+    if args.command == "smoke-result":
+        line, warn, failed = smoke_result(args.code)
+        print(line)
+        if warn:
+            print(f"::warning::{line}")
+        return 1 if failed else 0
     try:
         if args.command == "select-run":
             document = json.loads(Path(args.runs).read_text())

@@ -148,3 +148,19 @@ def test_main_select_run_prints_the_run_id_and_check_jobs_exits_by_result(
     runs.write_text("not json")
     assert release_gate.main(["select-run", "--sha", SHA, str(runs)]) == 1
     assert release_gate.main(["select-run", "--sha", SHA, str(tmp_path / "missing.json")]) == 1
+
+
+def test_smoke_result_maps_every_exit_code(capsys: pytest.CaptureFixture[str]) -> None:
+    assert release_gate.smoke_result(0) == ("confirmed", False, False)
+    line, warn, failed = release_gate.smoke_result(3)
+    assert "capacity" in line and "unconfirmed" in line and warn and not failed
+    line, warn, failed = release_gate.smoke_result(4)
+    assert "receipt" in line and "unconfirmed" in line and warn and not failed
+    for code in (1, 2, 5, 127):
+        line, warn, failed = release_gate.smoke_result(code)
+        assert line == f"FAILED (exit {code})" and not warn and failed
+    assert release_gate.main(["smoke-result", "0"]) == 0
+    assert "::warning::" not in capsys.readouterr().out
+    assert release_gate.main(["smoke-result", "4"]) == 0
+    assert "::warning::" in capsys.readouterr().out
+    assert release_gate.main(["smoke-result", "1"]) == 1
