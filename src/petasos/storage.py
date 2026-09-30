@@ -46,6 +46,7 @@ class Database:
         """Create every table. `executescript` issues its own implicit commit, so this
         does not run inside `transaction()`; each statement is idempotent DDL."""
         from petasos.ledger.store import LEDGER_SCHEMA
+        from petasos.memory.store import MEMORY_SCHEMA
         from petasos.trust.grants import GRANTS_SCHEMA, RAIL_SLOTS_SCHEMA
 
         conn = self.connect()
@@ -53,5 +54,6 @@ class Database:
             conn.executescript(LEDGER_SCHEMA)
             conn.executescript(GRANTS_SCHEMA)
             conn.executescript(RAIL_SLOTS_SCHEMA)
+            conn.executescript(MEMORY_SCHEMA)
         finally:
             conn.close()
