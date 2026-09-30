@@ -11,7 +11,7 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       `ToolDefinition`s as closures over the scope and the capture, and `build_registry` (spec 3.5a,
       3.8, 3.14 to 3.17). Test against a `Gate` directly. Satisfies acceptance tests 11, the capture
       half of 12, the registry half of 13, the tool half of 9, and the tier and verb half of 25.
-- [ ] Write `sessions/quotas.py` (`reserve` inside the caller's transaction, `abuse_counters`, ceilings),
+- [x] Write `sessions/quotas.py` (`reserve` inside the caller's transaction, `abuse_counters`, ceilings),
       `sessions/store.py` (`SESSIONS_SCHEMA`, `SessionStore.mint` as one transaction, `expire`), and
       `sessions/visitor.py` (`session_routes`) (spec 3.19 to 3.22); add both schemas to
       `Database.migrate()` and update the table-list test. Satisfies the store-level halves of
