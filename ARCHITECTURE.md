@@ -1,6 +1,6 @@
 # ARCHITECTURE.md: how Petasos is built
 
-Status: PROPOSED, version 0.2 (2026-09-26: sections 2 to 7 and 9 rewritten for D-015, D-016, D-017). Binding once ratified. Live code beats this document; when they disagree, fix one of them in the same PR and bump the version here.
+Status: PROPOSED, version 0.3 (2026-09-29: invariant 1 reworded for the approval comparison, per `review/2026-09-27-specs-002-003.md` finding 6; 2026-09-26: sections 2 to 7 and 9 rewritten for D-015, D-016, D-017). Binding once ratified. Live code beats this document; when they disagree, fix one of them in the same PR and bump the version here.
 
 Plain-language rule: every term is defined the first time it appears. If you find one that is not, that is a bug in this document.
 
@@ -110,7 +110,7 @@ Every response on the way out passes the **guard seam** exactly once.
 
 ## 5. Invariants (each one is a test)
 
-1. The risk profile type has no tier field, and no caller-facing entry point accepts risk facts, a tier, a verb, or an approver from request content.
+1. The risk profile type has no tier field, and no caller-facing entry point accepts risk facts, a tier, a verb, or an approver from request content. The one exception is narrow: an authorized approval entry point (`GrantStore.approve` and the owner's `approve` tool) accepts a claimed verb solely to compare it with the verb stored on the grant, burning the grant on a mismatch (section 4, step 9); it never sets or selects a verb, a tier, a record, or an approver.
 2. `derive_tier` is pure and monotone (adding any risk flag never lowers the tier), and every valid risk profile maps to the expected tier and verb in the decision table.
 3. A grant token is never returned to the client that proposed the action.
 4. Approve is one conditional update inside one transaction; two concurrent approvals of the same token cannot both succeed; a token is unique across all grants.
