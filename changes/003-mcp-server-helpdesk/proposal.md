@@ -1,6 +1,6 @@
 # Proposal: 003-mcp-server-helpdesk
 
-status: proposed
+status: ratified
 lane: claude
 depends_on: 001-trust-core, 002-memory-canary-guard
 decisions: D-002, D-003, D-016, D-017
