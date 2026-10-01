@@ -3,7 +3,7 @@
 Each task names the acceptance test numbers from `spec.md` section 3 it satisfies. Tick
 `- [ ]` to `- [x]` in the same commit that completes it.
 
-- [ ] Write `mcp/service.py`: move `TOOL_ARG_SPEC`, `ALLOWED_TOOLS`, the raw shape check
+- [x] Write `mcp/service.py`: move `TOOL_ARG_SPEC`, `ALLOWED_TOOLS`, the raw shape check
       (`shape_ok`), the card builder (`approval_card`), and `approve_and_run` out of
       `mcp/tools.py` and `mcp/server.py`; add `PROPOSABLE_TOOLS`; re-export the old names
       (including `_shape_ok`) from their old modules with `__all__` (spec 4.7, 4.8). Run the
