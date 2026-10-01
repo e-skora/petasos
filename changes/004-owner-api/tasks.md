@@ -21,7 +21,7 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       unchanged), add the `owner` label in `guard_seam.py`, and the package `__init__` exports
       (spec 4.4, 4.5, 4.10, 4.11). Satisfies acceptance tests 1 to 9, 11 to 15, 17, the MCP half
       of 10, and the reader test 18.
-- [ ] Run `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`,
+- [x] Run `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`,
       `uv pip check`, `uv run pytest` (the 003 suite unmodified is acceptance test 16); freeze
       a commit; review the diff against every acceptance test; run the wall check; write
       `report.md`; open the pull request.
