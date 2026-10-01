@@ -15,7 +15,7 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       `owner/ledger_view.py` (`rows_for` and the description table) (spec 4.1, 4.3, 4.6, 4.7,
       4.9). Satisfies the gate half of test 3, the view half of test 12, and the sentences half
       of test 14.
-- [ ] Write `owner/api.py` (`owner_routes`, the check order, bounds, quotas, the ten endpoints
+- [x] Write `owner/api.py` (`owner_routes`, the check order, bounds, quotas, the ten endpoints
       of spec 4.5, plain `def` handlers), extend `app.py` (`OriginGate` outermost reading
       `origins.BROWSER_ORIGINS`, the routes, `redirect_slashes=False`, docs URLs off, signature
       unchanged), add the `owner` label in `guard_seam.py`, and the package `__init__` exports
