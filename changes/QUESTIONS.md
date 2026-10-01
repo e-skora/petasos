@@ -11,7 +11,7 @@ Append-only for agents. Elias answers by deleting the entry (and adding a decisi
 
 ## 2026-09-26 (Cowork planning thread): status of the four questions above
 
-These are recorded here so no builder reopens them. Only question 2 is still open.
+These are recorded here so no builder reopens them. None is still open. The 003 builder's table-name question (dated 2026-09-30) is settled 2026-10-01 as its option (a): the tables are `helpdesk_fake_mail` and `helpdesk_fake_refunds` (003 spec 3.11, version 2.2), so that flag is resolved and 003's report verdict is `Verdict: BUILT`.
 
 1. Settled: the repository is public `e-skora/petasos`, cloned at `~/code/Petasos` (D-005).
 2. Settled 2026-09-30 (Cowork planning thread, under Elias's standing "use best recommendations on the decisions" of 2026-09-26): the demo app is served at `petasos.io/demo/` from the one Cloudflare Pages project (`deploy-site.yml` already copies `demo/dist` into `site/demo`), and the API's allowed browser origins are `https://petasos.io` and `https://www.petasos.io` plus Vite's local dev server (change 004 spec 4.3, change 007 spec 7.1).
