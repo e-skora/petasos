@@ -1,6 +1,6 @@
 # Proposal: 004-owner-api
 
-status: proposed
+status: ratified
 lane: claude
 depends_on: 003-mcp-server-helpdesk
 decisions: D-002, D-003, D-009, D-016, D-017

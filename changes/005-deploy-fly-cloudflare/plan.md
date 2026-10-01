@@ -1,7 +1,8 @@
 # Plan: 005-deploy-fly-cloudflare
 
-grounded_at: (set by the planning thread at ratification, after the 003 build merges; the
-builder only checks it)
+grounded_at: `0539014` (the `main` commit that merged the 003-mcp-server-helpdesk build, PR #21,
+2026-10-01; the planning thread checked the merged 003 interfaces against this spec and set this
+value at ratification; the builder only checks it)
 
 lane: claude
 
