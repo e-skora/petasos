@@ -1,18 +1,21 @@
-"""The composition root: builds the FastAPI app, mounts `/healthz` and `/mcp`.
-
-Change 001 onward adds the trust gate, memory, and the help-desk tools; this change
-proves the shape (identity middleware, MCP session lifespan, exact routing) that they
-build on.
+"""The composition root: builds the FastAPI app, mounts `/healthz`, `POST /session`,
+and `/mcp`, and wires the guard seam and identity middleware around all of it
+(spec 3.23).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+import os
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from petasos.mcp.guard_seam import GuardSeam
+from petasos.mcp.identity import ClientRegistry
 from petasos.mcp.middleware import IdentityMiddleware
 from petasos.mcp.server import (
     build_mcp_server,
@@ -20,13 +23,18 @@ from petasos.mcp.server import (
     mcp_session_manager,
     run_session_manager,
 )
+from petasos.sessions.store import SessionStore
+from petasos.sessions.visitor import session_routes
+from petasos.storage import Database
 
 
-def create_app(tokens: Mapping[str, str]) -> FastAPI:
-    """Build the app. `tokens` maps a client id to its bearer token; nothing here
-    reads an environment variable."""
-    mcp_server = build_mcp_server()
+def create_app(db: Database, *, clock: Callable[[], datetime]) -> FastAPI:
+    """Build the app. `db.migrate()` is the caller's job before this runs; nothing
+    here reads an environment variable."""
+    mcp_server = build_mcp_server(db=db, clock=clock)
     session_manager = mcp_session_manager(mcp_server)
+    registry = ClientRegistry(db)
+    session_store = SessionStore(db, clock=clock)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -34,12 +42,23 @@ def create_app(tokens: Mapping[str, str]) -> FastAPI:
             yield
 
     app = FastAPI(lifespan=lifespan)
-    app.add_middleware(IdentityMiddleware, tokens=tokens)
+    app.add_middleware(IdentityMiddleware, registry=registry, clock=clock)
+    app.add_middleware(GuardSeam, db=db, clock=clock)
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
         return JSONResponse({"ok": True})
 
+    app.router.routes.extend(session_routes(session_store))
     app.router.routes.extend(mcp_routes(session_manager))
 
     return app
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    _db = Database(Path(os.environ["PETASOS_DB"]))
+    _db.migrate()
+    _app = create_app(_db, clock=lambda: datetime.now(UTC))
+    uvicorn.run(_app, host="0.0.0.0", port=8080)

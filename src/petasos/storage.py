@@ -45,8 +45,11 @@ class Database:
     def migrate(self) -> None:
         """Create every table. `executescript` issues its own implicit commit, so this
         does not run inside `transaction()`; each statement is idempotent DDL."""
+        from petasos.helpdesk.data import HELPDESK_SCHEMA
         from petasos.ledger.store import LEDGER_SCHEMA
         from petasos.memory.store import MEMORY_SCHEMA
+        from petasos.sessions.quotas import QUOTAS_SCHEMA
+        from petasos.sessions.store import SESSIONS_SCHEMA
         from petasos.trust.grants import GRANTS_SCHEMA, RAIL_SLOTS_SCHEMA
 
         conn = self.connect()
@@ -55,5 +58,8 @@ class Database:
             conn.executescript(GRANTS_SCHEMA)
             conn.executescript(RAIL_SLOTS_SCHEMA)
             conn.executescript(MEMORY_SCHEMA)
+            conn.executescript(HELPDESK_SCHEMA)
+            conn.executescript(SESSIONS_SCHEMA)
+            conn.executescript(QUOTAS_SCHEMA)
         finally:
             conn.close()

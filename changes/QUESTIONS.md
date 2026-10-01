@@ -17,3 +17,27 @@ These are recorded here so no builder reopens them. None is still open. The 003 
 2. Settled 2026-09-30 (Cowork planning thread, under Elias's standing "use best recommendations on the decisions" of 2026-09-26): the demo app is served at `petasos.io/demo/` from the one Cloudflare Pages project (`deploy-site.yml` already copies `demo/dist` into `site/demo`), and the API's allowed browser origins are `https://petasos.io` and `https://www.petasos.io` plus Vite's local dev server (change 004 spec 4.3, change 007 spec 7.1).
 3. Settled: Codex reviews every builder pull request (D-006, D-015). Changes 007 and 008, the stretch builds proposed for Codex, are out of v1 (D-016).
 4. Settled and superseded: no human merges builds; the merge gate does (D-015).
+
+## 2026-09-30 (Claude, building 003-mcp-server-helpdesk)
+
+Spec 003 section 3.11 names the help-desk's fake-effect tables `fake_mail` and
+`fake_refunds`. `tests/test_trust_helpers.py` (001's test fixtures, outside this
+change's wall) already defines its own ad hoc tables of those exact names for its
+own unit tests, built on top of whatever `Database.migrate()` creates. Once 003's
+`migrate()` also creates real `fake_mail`/`fake_refunds` tables with a different
+column layout, those tables exist first, so the test helper's own
+`CREATE TABLE IF NOT EXISTS` becomes a no-op and several `test_trust_executor.py`
+and `test_trust_grants.py` tests fail with a missing-column error the moment any
+effect runs. I could not find this collision anticipated anywhere in spec.md,
+plan.md, or DECISIONS.md, and editing `tests/test_trust_helpers.py` is outside
+this change's wall. I resolved it by naming this change's two tables
+`helpdesk_fake_mail` and `helpdesk_fake_refunds` instead (no acceptance test or
+other change's wall references the literal name `fake_mail`/`fake_refunds`, only
+the prose "fake_mail table"/"fake_refunds table"), and left the collision noted
+here rather than guessing whether a future change should still rename 001's test
+fixture, rename this change's tables back once 001's fixture is retired, or
+leave both as they are. Options: (a) ratify the renamed table names as the
+standing spelling; (b) have a later change rename `tests/test_trust_helpers.py`'s
+fake tables instead and revert 003 to the literal spec names; (c) leave this
+question open and treat it as cosmetic, since no interface outside this change's
+own tests names these tables.

@@ -27,7 +27,21 @@ def test_migrate_creates_the_file_and_tables(tmp_sqlite: Path) -> None:
         }
     finally:
         conn.close()
-    assert {"ledger", "grants", "rail_slots", "memory_entries", "canaries"} <= names
+    assert {
+        "ledger",
+        "grants",
+        "rail_slots",
+        "memory_entries",
+        "canaries",
+        "tickets",
+        "notes",
+        "helpdesk_fake_mail",
+        "helpdesk_fake_refunds",
+        "sessions",
+        "identities",
+        "quota_events",
+        "abuse_counters",
+    } <= names
 
 
 def test_migrate_is_idempotent(tmp_sqlite: Path) -> None:

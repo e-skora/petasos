@@ -1,33 +1,117 @@
-"""The MCP server: tool definitions and the streamable HTTP wiring.
-
-Change 003 adds the help-desk tools here; this change proves the `mcp` 2.x server API,
-routing, and lifespan with one tool.
-"""
+"""The MCP server: tool registration, per-identity tool visibility, the raw
+argument shape check, the per-session call quota, and the streamable HTTP wiring
+(spec 3.4 to 3.8)."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
+from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.routing import Route
 
+from petasos.mcp.tools import ALLOWED_TOOLS, TOOL_ARG_SPEC, mcp_refusal, register_tools
+from petasos.sessions import quotas
+
+if TYPE_CHECKING:
+    from petasos.storage import Database
+
 MCP_PATH = "/mcp"
 
 
-def build_mcp_server() -> MCPServer:
-    """Build the MCPServer with its tools registered.
+def _shape_ok(name: str, arguments: Any) -> bool:
+    spec = TOOL_ARG_SPEC.get(name)
+    if spec is None or not isinstance(arguments, Mapping):
+        return False
+    if set(arguments) != set(spec):
+        return False
+    return all(type(arguments[key]) is expected for key, expected in spec.items())
 
-    A separate function (rather than a module-level singleton) so tests can build a
-    fresh server, with its own session manager, per app instance.
-    """
-    server = MCPServer("petasos")
+
+def _identity_or_none(ctx: ServerRequestContext) -> Any:
+    request = ctx.request
+    if request is None:
+        return None
+    return getattr(request.state, "identity", None)
+
+
+class ToolAccessMiddleware:
+    """Per-request context-tier middleware: filters `tools/list`, and refuses a
+    `tools/call` for an unknown shape, a forbidden tool, or an exhausted quota,
+    before any adapter runs (spec 3.4, 3.15, 3.21)."""
+
+    def __init__(self, db: Database, clock: Callable[[], datetime]) -> None:
+        self._db = db
+        self._clock = clock
+
+    async def __call__(self, ctx: ServerRequestContext, call_next):
+        if ctx.method == "tools/list":
+            result = await call_next(ctx)
+            identity = _identity_or_none(ctx)
+            allowed = (
+                ALLOWED_TOOLS.get(identity.role, frozenset())
+                if identity is not None
+                else frozenset()
+            )
+            tools = result.get("tools", []) if isinstance(result, Mapping) else []
+            return {**result, "tools": [tool for tool in tools if tool.get("name") in allowed]}
+
+        if ctx.method == "tools/call":
+            params = ctx.params
+            if not isinstance(params, Mapping):
+                return mcp_refusal("refused/invalid_arguments")
+            name = params.get("name")
+            arguments = params.get("arguments")
+            if not isinstance(name, str) or not isinstance(arguments, Mapping):
+                return mcp_refusal("refused/invalid_arguments")
+
+            identity = _identity_or_none(ctx)
+            allowed = (
+                ALLOWED_TOOLS.get(identity.role, frozenset())
+                if identity is not None
+                else frozenset()
+            )
+            if name not in allowed:
+                return mcp_refusal("refused/not_allowed")
+
+            if not _shape_ok(name, arguments):
+                return mcp_refusal("refused/invalid_arguments")
+
+            now = self._clock()
+            with self._db.transaction() as conn:
+                admitted = quotas.reserve(
+                    conn,
+                    scope=identity.scope,
+                    family="calls",
+                    limit=quotas.CALLS_PER_HOUR,
+                    window=timedelta(hours=1),
+                    now=now,
+                )
+                if admitted:
+                    quotas.increment_counter(conn, "tool_calls")
+            if not admitted:
+                return mcp_refusal("refused/quota")
+
+        return await call_next(ctx)
+
+
+def build_mcp_server(*, db: Database, clock: Callable[[], datetime]) -> MCPServer:
+    """Build the MCPServer with every help-desk and owner tool registered, and the
+    `ToolAccessMiddleware` installed. A separate function (rather than a module-level
+    singleton) so tests can build a fresh server, with its own session manager, per
+    app instance."""
+    server = MCPServer("petasos", middleware=[ToolAccessMiddleware(db, clock)])
 
     @server.tool()
     def ping() -> str:
         return "pong"
+
+    register_tools(server, db=db, clock=clock)
 
     return server
 
