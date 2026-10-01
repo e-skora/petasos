@@ -9,7 +9,7 @@ Each task names the acceptance test numbers from `spec.md` section 3 it satisfie
       (including `_shape_ok`) from their old modules with `__all__` (spec 4.7, 4.8). Run the
       whole 003 suite unmodified. Write `tests/test_mcp_service.py`. Satisfies the service
       halves of acceptance tests 10 and 16.
-- [ ] Write `owner/outcomes.py`, `owner/auth.py` (`identity_for`, `request.state.identity`),
+- [x] Write `owner/outcomes.py`, `owner/auth.py` (`identity_for`, `request.state.identity`),
       `owner/origins.py` (`OriginGate`, `BROWSER_ORIGINS`), `owner/reads.py`
       (`ticket_activity`, `ticket_meta`), `owner/cards.py` (`owner_card`), and
       `owner/ledger_view.py` (`rows_for` and the description table) (spec 4.1, 4.3, 4.6, 4.7,
