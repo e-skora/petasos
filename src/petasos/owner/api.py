@@ -95,9 +95,10 @@ def _read_body(request: Request) -> bytes | None:
             length = int(content_length)
         except ValueError:
             length = None
-        if length is not None and length > MAX_OWNER_BODY_BYTES:
-            return None
-        return anyio.from_thread.run(request.body)
+        if length is not None:
+            if length > MAX_OWNER_BODY_BYTES:
+                return None
+            return anyio.from_thread.run(request.body)
 
     async def _accumulate() -> bytes | None:
         chunks: list[bytes] = []

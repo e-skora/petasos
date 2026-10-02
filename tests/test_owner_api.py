@@ -313,6 +313,20 @@ def test_chunked_body_bound(client) -> None:
     assert ok.json()["status"] == "executed"
 
 
+def test_unparseable_content_length_still_bounds_body(client) -> None:
+    minted = _mint(client)
+    headers = {**_auth(minted["tokens"]["agent"]), "content-length": "not-a-number"}
+    max_bytes = owner_api.MAX_OWNER_BODY_BYTES
+
+    too_big = client.post("/owner/propose", headers=headers, content=b"x" * (max_bytes + 1))
+    assert too_big.status_code == 413
+    assert too_big.json()["status"] == "refused/too_large"
+
+    ok = client.post("/owner/propose", headers=headers, content=_valid_json_of_length(100))
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "executed"
+
+
 @pytest.mark.parametrize(
     "raw",
     [
