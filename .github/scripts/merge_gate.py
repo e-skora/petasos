@@ -37,6 +37,10 @@ parser with a complete grammar; dismissed Codex reviews still contribute blocker
 only refused as proof that Codex finished); Codex is asked only when its missing review is
 the sole reason a pull request waits; and a head that keeps moving during the Codex wait is
 ordinary waiting, not a fault.
+Version 3.2 (2026-10-02) answers the phase 1 delta review (`review/2026-10-02-loop-phase1-delta.md`, Part A): the
+`wall_forbidden` parser never drops a restriction (A1); the merge re-reads the live `main` tip
+and waits if it is not the commit this run pinned (A2); and a Codex request is only posted after
+the pull request is gathered and judged again (A3).
 
 A builder pull request merges only when ALL of these hold on its current head commit H:
 
@@ -49,8 +53,11 @@ A builder pull request merges only when ALL of these hold on its current head co
    `main` itself). Any commit on `main` after the branch was cut, whatever file it touched,
    makes the pull request wait until the builder merges `main` into the branch; that push
    produces a new H, so CI and both reviews run again against the current dependencies,
-   workflows, and specs. The `main` ruleset also requires an up-to-date branch, so GitHub
-   refuses the merge itself if `main` moves between this check and the merge call.
+   workflows, and specs. The pull request's reported base commit can lag `main`, so matching
+   base fields alone do not prove `main` has not moved: the merge re-reads the live `main` tip
+   right before its final check and waits if it is not the pinned commit. The `main` ruleset
+   also requires an up-to-date branch, so GitHub refuses the merge itself if `main` moves in
+   the short interval between that check and the merge call.
 4. CI: the latest `CI` workflow run (`.github/workflows/ci.yml`, event `pull_request`) for H
    has jobs `python`, `demo`, and `private-identifiers`, each `success`.
 5. Claude review: the latest `Claude review` workflow run for H has its `review` job at
@@ -279,28 +286,30 @@ def parse_wall_expected(plan_text: str) -> list[str]:
     return patterns
 
 
-def _is_wall_path(token: str) -> bool:
-    return "/" in token or "." in token
-
-
 def read_wall_forbidden(plan_text: str) -> tuple[list[str], list[str]]:
-    """The one parser for `wall_forbidden`: (paths, problems). Never an empty list by accident.
+    """The one parser for `wall_forbidden`: (paths, problems). Never drops a restriction.
 
     Grammar. The section is the `wall_forbidden:` line and the lines after it up to the first
     blank line. It is valid in exactly these shapes:
 
-    - Empty: `wall_forbidden: none` and nothing else in the section.
-    - Bullets: any lead-in text (it may name backticked paths), then one bullet per path,
-      each `- `path`` with an optional trailing parenthetical note. Once bullets start, every
-      later line in the section is a bullet.
-    - Prose with paths: lead-in text that names at least one backticked path.
+    - Empty: the header text is exactly `none` (`wall_forbidden: none`) and nothing else in the
+      section. `none` means nothing anywhere else.
+    - Bullets: optional lead-in prose, then one bullet per path. A bullet is exactly optional
+      indentation, `- `, ONE backticked path, then optionally whitespace and ONE parenthetical
+      note `( ... )` that contains no backtick. Any other text on a bullet line (a second
+      backticked token anywhere, text outside the parenthetical, an unclosed parenthesis) is a
+      problem. Once bullets start, every later line in the section is a bullet.
+    - Prose with paths (the legacy form of plans 000 to 003 and the 005 header): lead-in text on
+      the header line and the following non-bullet lines. EVERY backticked token in that prose
+      is a forbidden path, with or without `/` or `.`. Over-restricting is the safe direction.
 
-    Every other shape is a problem, and the caller must treat the plan as unreadable: no
-    backticked path at all (`wall_forbidden: src/a/**`, `wall_forbidden: plus these:` with the
-    list after a blank line), an unmatched backtick, a bullet without a path or with a second
-    path, prose after the bullets, a bullet list that starts after a blank line, and a missing
-    or repeated header. In a bullet the backticked token is the path; in lead-in text a
-    backticked token counts as a path when it contains `/` or `.`.
+    A backticked token is a path wherever it sits, so a bullet that is a problem still
+    contributes all of its tokens to the forbidden paths. Every other shape is a problem, and the
+    caller must treat the plan as unreadable: no backticked path at all (`wall_forbidden:
+    src/a/**`, `wall_forbidden: plus these:` with the list after a blank line), an unmatched
+    backtick, a bullet without a path, prose after the bullets, a bullet list that starts after
+    a blank line (any `-` line with a backtick right after the section's blank line, also after
+    `wall_forbidden: none`), and a missing or repeated header.
     """
     lines = plan_text.splitlines()
     at = [i for i, ln in enumerate(lines) if ln.strip().startswith("wall_forbidden:")]
@@ -336,19 +345,16 @@ def _read_forbidden_section(lines: list[str], header_at: int) -> tuple[list[str]
         after += 1
     if end < len(lines) and after < len(lines):
         nxt = lines[after].strip()
-        if nxt.startswith("-") and any(_is_wall_path(p) for p in re.findall(r"`([^`]+)`", nxt)):
+        if nxt.startswith("-") and "`" in nxt:
             problems.append("wall_forbidden continues after a blank line")
 
     paths: list[str] = []
     for line in [lines[header_at], *body]:
         if line.count("`") % 2:
             problems.append(f"wall_forbidden has an unmatched backtick: {line.strip()[:60]!r}")
-        tokens = re.findall(r"`([^`]+)`", line)
-        if line.strip().startswith("-") and tokens:
-            # A bullet names exactly one path, even one without `/` or `.` (`Dockerfile`).
-            paths.append(tokens[0])
-        else:
-            paths.extend(p for p in tokens if _is_wall_path(p))
+        # Every backticked token is a forbidden path, in a bullet or in prose, whatever it
+        # looks like. A malformed bullet is also a problem (below), never a dropped path.
+        paths.extend(t.strip() for t in re.findall(r"`([^`]+)`", line) if t.strip())
 
     in_bullets = False
     for line in body:
@@ -371,13 +377,32 @@ def _read_forbidden_section(lines: list[str], header_at: int) -> tuple[list[str]
 
 
 def _forbidden_bullet_problems(stripped: str) -> list[str]:
+    """Problems with one stripped bullet line: it must be `- `path`` plus one optional note."""
     tokens = re.findall(r"`([^`]+)`", stripped)
     if not tokens:
         return [f"a wall_forbidden bullet has no backticked path: {stripped[:60]!r}"]
-    rest = stripped.split(f"`{tokens[0]}`", 1)[1]
-    if "`" in rest and not re.fullmatch(r"\s*\(.*\)\s*", rest):
-        return [f"a wall_forbidden bullet has more than one path: {stripped[:60]!r}"]
+    found = re.fullmatch(r"-\s+`([^`]+)`(?:\s*(\([^`]*\)))?\s*", stripped)
+    if found is None or not _one_parenthetical(found.group(2)):
+        return [
+            (
+                "a wall_forbidden bullet must be one backticked path and at most one "
+                f"parenthetical note without backticks: {stripped[:60]!r}"
+            )
+        ]
     return []
+
+
+def _one_parenthetical(note: str | None) -> bool:
+    """True when `note` is None or a single balanced `( ... )` that closes only at its end."""
+    if note is None:
+        return True
+    depth = 0
+    for i, ch in enumerate(note):
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth < 0 or (depth == 0 and i != len(note) - 1):
+            return False
+    return depth == 0
 
 
 def wall_problems(plan_text: str) -> list[str]:
@@ -560,7 +585,9 @@ def evaluate(pr: PullFacts) -> Verdict:
         reasons.append(f"base is `{pr.base_ref}`, not `main`")
     # Every file read from `main` (proposal, plan, grounding, whole-file comparisons) was read
     # at the pinned commit, so the pull request must sit on that same commit. A newer base may
-    # have revoked the ratification or changed the wall; only a fresh scan can tell.
+    # have revoked the ratification or changed the wall; only a fresh scan can tell. Equal
+    # base fields do not prove `main` has not moved (GitHub's base commit can lag `main`):
+    # `_Run.merge` reads the live `main` tip before its last check.
     if pr.base_sha is None or pr.pinned_main_sha is None or pr.base_sha != pr.pinned_main_sha:
         reasons.append(BASE_MOVED_REASON)
     if pr.head_ref != f"build/{change}":
@@ -1143,13 +1170,23 @@ def main() -> int:
             comments = gh.paged(f"/issues/{facts.number}/comments")
             existing = [(login(c), c.get("body") or "") for c in comments]
             if should_request_codex(facts, verdict, existing):
-                # The facts are from before the other candidates were read: look again.
-                changed = metadata_changes(gh.request("GET", f"/pulls/{facts.number}"), facts, repo)
-                if changed:
+                # The facts are from before the other candidates were read: gather and judge
+                # the pull request again, and ask only if it is still the same head and
+                # Codex's missing review is still the one thing it waits for.
+                try:
+                    fresh = gather(gh, {"number": facts.number}, main_sha, merged_set)
+                except PullKeptChanging:
                     lines.append(
-                        f"- #{facts.number}: not asking Codex, it changed ({'; '.join(changed)})."
+                        f"- #{facts.number} waits: {KEPT_CHANGING_REASON}; not asking Codex."
                     )
                     continue
+                fresh_verdict = evaluate(fresh)
+                if fresh.head_sha != facts.head_sha or not should_request_codex(
+                    fresh, fresh_verdict, existing
+                ):
+                    lines.append(f"- #{facts.number}: not asking Codex, it changed since the scan.")
+                    continue
+                facts = fresh
                 gh.request(
                     "POST",
                     f"/issues/{facts.number}/comments",
@@ -1256,7 +1293,10 @@ class _Run:
         the pull request against the still-pinned `main` (fresh metadata, CI, Claude review,
         Codex reviews), requires the same head and base as the facts that were judged ready,
         and only then re-reads the pull request once more, as close to the merge request as a
-        GET allows. True if merged.
+        GET allows. Matching base fields do not prove `main` is unmoved, so right after
+        re-gathering (before the final admission check) it reads the live `main` tip and waits
+        if it is not the commit this run pinned; a failed read is a fault. The ruleset's strict
+        up-to-date rule covers the interval after that read. True if merged.
         """
         gh, lines, n = self.gh, self.lines, facts.number
         try:
@@ -1267,6 +1307,19 @@ class _Run:
         except Exception as err:  # noqa: BLE001
             self.fault(
                 f"- #{n} was ready but the gate could not re-read it before merging ({err!r})."
+            )
+            return False
+        try:
+            live_main = gh.request("GET", "/branches/main")["commit"]["sha"]
+        except Exception as err:  # noqa: BLE001
+            self.fault(
+                f"- #{n} was ready but the gate could not read `main` before merging ({err!r})."
+            )
+            return False
+        if live_main != self.main_sha:
+            lines.append(
+                f"- #{n} waits: `main` moved to `{live_main}` since this run pinned "
+                f"`{self.main_sha}`; it was not merged."
             )
             return False
         verdict = evaluate(again)

@@ -774,9 +774,11 @@ PRE_CHANGE_WALLS = {
             "plan.md",
             "pyproject.toml",
             ".gitignore",
+            "LICENSE",
             "README.md",
             ".github/CODEOWNERS",
             ".github/pull_request_template.md",
+            "main",
         ],
     ),
     "001-trust-core": (
@@ -840,6 +842,8 @@ PRE_CHANGE_WALLS = {
             "src/petasos/memory/**",
             "src/petasos/owner/**",
             "GrantStore.stage()",
+            "already_executed",
+            "run_direct",
         ],
     ),
     "004-owner-api": (
@@ -1774,7 +1778,7 @@ def test_main_waits_for_codex_and_merges_in_the_same_run():
     fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
     lines = run_main(
         fake,
-        [ready_facts(reviews=[]), ready_facts(reviews=[]), ready_facts()],
+        [ready_facts(reviews=[]), ready_facts(reviews=[]), ready_facts(reviews=[]), ready_facts()],
         wait_seconds="600",
     )
     assert codex_request_posted(fake)
@@ -1825,7 +1829,9 @@ def test_main_wait_never_merges_when_codex_answers_with_a_blocker():
     blocked = ready_facts(
         reviews=[Review("chatgpt-codex-connector[bot]", "COMMENTED", "P1 bad", SHA)]
     )
-    lines = run_main(fake, [ready_facts(reviews=[]), blocked], wait_seconds="600")
+    lines = run_main(
+        fake, [ready_facts(reviews=[]), ready_facts(reviews=[]), blocked], wait_seconds="600"
+    )
     assert run_main.last_time.sleeps == [30]
     assert not any(c[0] == "PUT" for c in fake.calls)
     assert any("is a blocker" in line for line in lines)
@@ -1844,7 +1850,8 @@ def test_wait_for_codex_stops_at_thumbs_up_on_the_request():
 
 def test_wait_for_codex_failure_inside_the_wait_leaves_the_pr_waiting():
     fake = FakeGitHubForMain(merge_result={"merged": True, "sha": MERGE_SHA})
-    seq = [ready_facts(reviews=[])]
+    # The scan and the fresh read before the request succeed; the wait then fails.
+    seq = [ready_facts(reviews=[]), ready_facts(reviews=[])]
 
     def gather_then_raise(*a, **k):
         if seq:
@@ -1899,7 +1906,8 @@ def test_main_only_one_pull_request_merges_per_run_even_if_two_become_ready_afte
     def codex_answers_after_the_first_read(gh, pr, main_sha, merged):
         n = pr["number"]
         seen[n] = seen.get(n, 0) + 1
-        return ready_facts(number=n, reviews=[]) if seen[n] == 1 else ready_facts(number=n)
+        # read 1 is the scan, read 2 the fresh read before the request, then Codex answers
+        return ready_facts(number=n, reviews=[]) if seen[n] <= 2 else ready_facts(number=n)
 
     lines = run_main(
         fake,
@@ -2559,6 +2567,9 @@ F3_MALFORMED = {
     "none-with-extra-words": F3_EXPECTED + "wall_forbidden: none, mostly\n",
     "header-only": F3_EXPECTED + "wall_forbidden:\n",
     "section-missing": F3_EXPECTED + "More prose.\n",
+    # A backtick inside the note is a second path, not commentary (review A1).
+    "backtick-in-bullet-note": F3_EXPECTED
+    + "wall_forbidden: plus:\n- `src/a/x.py` (only the parser, `read()` stays)\n",
 }
 
 
@@ -2591,7 +2602,7 @@ def test_f3_malformed_forbidden_wall_is_a_problem_never_an_empty_list(name):
         ),
         (
             F3_EXPECTED
-            + "wall_forbidden: plus:\n- `src/a/x.py` (only the parser, `read()` stays)\n- `src/b/**`\n",
+            + "wall_forbidden: plus:\n- `src/a/x.py` (only the parser, read() stays)\n- `src/b/**`\n",
             ["src/a/x.py", "src/b/**"],
         ),
         (F3_EXPECTED + "wall_forbidden: do not touch `src/a/x.py`.\n", ["src/a/x.py"]),
@@ -2621,6 +2632,104 @@ def test_f3_wall_problems_and_the_parser_share_one_reading():
     for plan in F3_MALFORMED.values():
         _, parser_problems = merge_gate.read_wall_forbidden(plan)
         assert set(parser_problems) <= set(wall_problems(plan))
+
+
+# ---- Review A1: the forbidden-wall parser never silently drops a restriction
+
+A1_EXPECTED = "wall_expected:\n- `src/petasos/**`\n- `Dockerfile`\n\n"
+A1_MCP = "src/petasos/mcp/server.py"
+
+
+def a1_facts(plan: str, path: str):
+    return ready_facts(
+        plan_text="grounded_at: `1234567`\n\n" + plan,
+        files=[
+            FileChange(path, "modified"),
+            FileChange("changes/001-trust-core/report.md", "added"),
+        ],
+    )
+
+
+def a1_refused(plan: str, path: str) -> bool:
+    """True when the plan is a wall problem or keeps `path` forbidden (not ready either way)."""
+    paths, problems = merge_gate.read_wall_forbidden(plan)
+    verdict = evaluate(a1_facts(plan, path))
+    assert not verdict.ready, verdict.reasons
+    return bool(problems) or path in paths
+
+
+def test_a1_control_the_same_files_are_ready_when_nothing_forbids_them():
+    plan = A1_EXPECTED + "wall_forbidden: none\n"
+    for path in (A1_MCP, "Dockerfile"):
+        assert evaluate(a1_facts(plan, path)).ready
+
+
+def test_a1_parenthetical_naming_a_second_path_is_a_problem_and_stays_forbidden():
+    plan = (
+        A1_EXPECTED
+        + "wall_forbidden: plus:\n- `src/petasos/trust/**` (also `src/petasos/mcp/**`)\n"
+    )
+    paths, problems = merge_gate.read_wall_forbidden(plan)
+    assert problems
+    assert paths == ["src/petasos/trust/**", "src/petasos/mcp/**"]
+    assert a1_refused(plan, A1_MCP)
+    assert_not_ready(a1_facts(plan, A1_MCP), UNREADABLE)
+
+
+def test_a1_trailing_text_outside_parentheses_with_a_path_is_a_problem():
+    plan = A1_EXPECTED + "wall_forbidden: plus:\n- `src/petasos/trust/**` and src/petasos/mcp/**\n"
+    assert merge_gate.read_wall_forbidden(plan)[1]
+    assert a1_refused(plan, A1_MCP)
+    assert_not_ready(a1_facts(plan, A1_MCP), UNREADABLE)
+
+
+def test_a1_a_bullet_after_none_and_a_blank_line_is_a_problem_even_without_slash_or_dot():
+    plan = A1_EXPECTED + "wall_forbidden: none\n\n- `Dockerfile`\n"
+    assert any("continues after a blank line" in p for p in merge_gate.read_wall_forbidden(plan)[1])
+    assert a1_refused(plan, "Dockerfile")
+    assert_not_ready(a1_facts(plan, "Dockerfile"), UNREADABLE)
+
+
+def test_a1_prose_naming_an_extensionless_path_keeps_it_forbidden():
+    plan = A1_EXPECTED + "wall_forbidden: do not touch `src/petasos/trust/**` or `Dockerfile`.\n"
+    assert merge_gate.read_wall_forbidden(plan) == (["src/petasos/trust/**", "Dockerfile"], [])
+    assert a1_refused(plan, "Dockerfile")
+    assert_not_ready(a1_facts(plan, "Dockerfile"), "forbidden")
+
+
+def test_a1_prose_lines_after_the_header_also_count_every_token():
+    plan = A1_EXPECTED + "wall_forbidden: do not touch\n`Dockerfile`, `Makefile`.\n"
+    assert merge_gate.read_wall_forbidden(plan) == (["Dockerfile", "Makefile"], [])
+
+
+@pytest.mark.parametrize(
+    "bullet",
+    [
+        "- `a.py` (note",
+        "- `a.py` (note) (another)",
+        "- `a.py` (note) trailing",
+        "- `a.py` `b.py`",
+        "- trailing `a.py`",
+        "- `a.py` (see `b.py`)",
+        "-`a.py`",
+    ],
+)
+def test_a1_every_malformed_bullet_is_a_problem_and_keeps_its_tokens_forbidden(bullet):
+    plan = A1_EXPECTED + f"wall_forbidden: plus:\n{bullet}\n"
+    paths, problems = merge_gate.read_wall_forbidden(plan)
+    assert problems, bullet
+    assert "a.py" in paths
+
+
+@pytest.mark.parametrize("bullet", ["- `a.py`", "  - `a.py`", "- `a.py`  (a (nested) note)"])
+def test_a1_well_formed_bullets_are_accepted(bullet):
+    plan = A1_EXPECTED + f"wall_forbidden: plus:\n{bullet}\n"
+    assert merge_gate.read_wall_forbidden(plan) == (["a.py"], [])
+
+
+def test_a1_none_is_only_special_as_the_exact_header_text():
+    assert merge_gate.read_wall_forbidden("wall_forbidden: do not touch `none`.\n")[0] == ["none"]
+    assert merge_gate.read_wall_forbidden("wall_forbidden: none\n") == ([], [])
 
 
 # ---- Finding 4: completion evidence is separate from blocker collection
@@ -2729,29 +2838,39 @@ def test_f6_the_gates_own_earlier_request_still_stops_a_second_one():
 
 
 def test_f6_main_does_not_ask_codex_when_a_hold_was_added_after_the_scan():
-    """The scan's facts have no hold; the fresh read just before posting does."""
-    fake = FakeGitHubForMain(MERGED, rereads={1: open_pr_dict(labels=[{"name": "hold"}])})
-    lines = run_main(fake, ready_facts(reviews=[]), wait_seconds="600")
+    """The scan's facts have no hold; the fresh gather just before posting does."""
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(
+        fake,
+        [ready_facts(reviews=[]), ready_facts(reviews=[], labels=["hold"])],
+        wait_seconds="600",
+    )
     assert not codex_request_posted(fake)
     assert run_main.last_time.sleeps == []
-    assert any("not asking Codex" in ln and "`hold` label" in ln for ln in lines)
+    assert any("not asking Codex" in ln for ln in lines)
     assert run_main.last_code == 0
 
 
 def test_f6_main_does_not_ask_codex_when_the_head_moved_after_the_scan():
-    fake = FakeGitHubForMain(MERGED, rereads={1: open_pr_dict(head=head_dict(OLD_SHA))})
-    run_main(fake, ready_facts(reviews=[]), wait_seconds="0")
+    fake = FakeGitHubForMain(MERGED)
+    run_main(
+        fake,
+        [ready_facts(reviews=[]), ready_facts(reviews=[], head_sha=OLD_SHA)],
+        wait_seconds="0",
+    )
     assert not codex_request_posted(fake)
 
 
 def test_f6_main_does_not_ask_codex_when_the_base_or_title_changed_after_the_scan():
-    for reread in (
-        open_pr_dict(base={"ref": "release", "sha": MAIN_SHA}),
-        open_pr_dict(base={"ref": "main", "sha": NEW_MAIN}),
-        open_pr_dict(title="[build] 002-memory-canary-guard"),
+    for changed in (
+        {"base_ref": "release"},
+        {"base_sha": NEW_MAIN},
+        {"title": "[build] 002-memory-canary-guard"},
     ):
-        fake = FakeGitHubForMain(MERGED, rereads={1: reread})
-        run_main(fake, ready_facts(reviews=[]), wait_seconds="0")
+        fake = FakeGitHubForMain(MERGED)
+        run_main(
+            fake, [ready_facts(reviews=[]), ready_facts(reviews=[], **changed)], wait_seconds="0"
+        )
         assert not codex_request_posted(fake)
 
 
@@ -2759,9 +2878,9 @@ def test_f6_main_does_not_ask_codex_when_the_base_or_title_changed_after_the_sca
 
 
 def moving_after_first_read(*args, **kwargs):
-    """The first call is the scan (needs Codex); every later call finds a moving head."""
+    """The scan and the fresh read before the request need Codex; the wait finds a moving head."""
     moving_after_first_read.calls += 1
-    if moving_after_first_read.calls == 1:
+    if moving_after_first_read.calls <= 2:
         return ready_facts(reviews=[])
     raise merge_gate.PullKeptChanging(merge_gate.KEPT_CHANGING_REASON)
 
@@ -2836,7 +2955,7 @@ def test_f7_wait_for_codex_raises_kept_changing_and_never_returns_the_old_facts(
 def test_f7_a_real_read_error_in_the_wait_is_still_a_fault():
     def reads_then_fails(*args, **kwargs):
         reads_then_fails.calls += 1
-        if reads_then_fails.calls == 1:
+        if reads_then_fails.calls <= 2:  # the scan, then the fresh read before the request
             return ready_facts(reviews=[])
         raise OSError("network down")
 
@@ -2845,3 +2964,130 @@ def test_f7_a_real_read_error_in_the_wait_is_still_a_fault():
     lines = run_main(fake, ready_facts(), wait_seconds="600", gather_side_effect=reads_then_fails)
     assert run_main.last_code == 1
     assert any("the wait failed" in ln for ln in lines)
+
+
+# ---- Review A2: the merge reads the live `main` tip before its final check
+
+
+class MovingMain(FakeGitHubForMain):
+    """`GET /branches/main` returns the first sha once, then the second on every later read."""
+
+    def __init__(self, *args, first=MAIN_SHA, later=NEW_MAIN, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.first, self.later, self.main_reads = first, later, 0
+
+    def request(self, method, path, body=None):
+        if method == "GET" and path == "/branches/main":
+            self.calls.append((method, path, body))
+            self.main_reads += 1
+            return {"commit": {"sha": self.first if self.main_reads == 1 else self.later}}
+        return super().request(method, path, body)
+
+
+def test_a2_main_moved_after_the_scan_stops_the_merge_even_though_the_pr_base_still_matches():
+    fake = MovingMain(MERGED)  # the pull request's reported base stays at the pinned commit
+    lines = run_main(fake, ready_facts())
+    assert fake.main_reads == 2
+    assert not puts(fake)
+    assert not any(c[0] in ("DELETE",) for c in fake.calls)
+    assert any("`main` moved" in ln and "#1 waits" in ln for ln in lines)
+    assert run_main.last_code == 0  # waiting, not a fault
+
+
+def test_a2_main_unchanged_lets_the_merge_proceed():
+    fake = MovingMain(MERGED, later=MAIN_SHA)
+    run_main(fake, ready_facts())
+    assert fake.main_reads == 2
+    assert [c[1] for c in puts(fake)] == ["/pulls/1/merge"]
+    assert run_main.last_code == 0
+
+
+def test_a2_a_failed_live_main_read_is_a_fault_and_no_merge_is_sent():
+    fake = FakeGitHubForMain(MERGED)
+    reads = {"n": 0}
+    real = fake.request
+
+    def request(method, path, body=None):
+        if method == "GET" and path == "/branches/main":
+            reads["n"] += 1
+            if reads["n"] > 1:
+                raise OSError("network down")
+        return real(method, path, body)
+
+    fake.request = request
+    lines = run_main(fake, ready_facts())
+    assert not puts(fake)
+    assert run_main.last_code == 1
+    assert any("could not read `main` before merging" in ln for ln in lines)
+
+
+# ---- Review A3: the Codex request is judged on fresh evidence
+
+
+def test_a3_ci_starting_a_new_run_between_the_scan_and_the_request_posts_no_request():
+    scan = ready_facts(reviews=[])
+    running = ready_facts(
+        reviews=[],
+        ci=WorkflowEvidence(
+            ".github/workflows/ci.yml",
+            "pull_request",
+            SHA,
+            "in_progress",
+            {"python": "success", "demo": "success", "private-identifiers": "success"},
+        ),
+    )
+    assert evaluate(running).reasons != (NO_CODEX,)
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(fake, [scan, running], wait_seconds="600")
+    assert not codex_request_posted(fake)
+    assert run_main.last_time.sleeps == []
+    assert any("not asking Codex" in ln for ln in lines)
+    assert run_main.last_code == 0
+
+
+def test_a3_a_codex_blocker_between_the_scan_and_the_request_posts_no_request():
+    scan = ready_facts(reviews=[])
+    fresh = ready_facts(reviews=[Review(CODEX_LOGIN, "COMMENTED", "blocker | missing check", SHA)])
+    assert NO_CODEX not in evaluate(fresh).reasons
+    assert not evaluate(fresh).ready
+    fake = FakeGitHubForMain(MERGED)
+    run_main(fake, [scan, fresh], wait_seconds="0")
+    assert not codex_request_posted(fake)
+
+
+def test_a3_a_fresh_read_that_keeps_changing_skips_the_request_without_a_fault():
+    calls = {"n": 0}
+
+    def scan_then_moving(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ready_facts(reviews=[])
+        raise merge_gate.PullKeptChanging(merge_gate.KEPT_CHANGING_REASON)
+
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(fake, ready_facts(), wait_seconds="600", gather_side_effect=scan_then_moving)
+    assert not codex_request_posted(fake)
+    assert run_main.last_code == 0
+    assert any("#1 waits" in ln and "not asking Codex" in ln for ln in lines)
+
+
+def test_a3_a_fresh_read_error_is_a_fault():
+    calls = {"n": 0}
+
+    def scan_then_error(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ready_facts(reviews=[])
+        raise OSError("network down")
+
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(fake, ready_facts(), wait_seconds="0", gather_side_effect=scan_then_error)
+    assert not codex_request_posted(fake)
+    assert run_main.last_code == 1
+    assert any("the Codex request failed" in ln for ln in lines)
+
+
+def test_a3_unchanged_fresh_facts_still_post_the_request():
+    fake = FakeGitHubForMain(MERGED)
+    run_main(fake, [ready_facts(reviews=[]), ready_facts(reviews=[])], wait_seconds="0")
+    assert codex_request_posted(fake)
