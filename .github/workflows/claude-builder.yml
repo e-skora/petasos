@@ -88,12 +88,23 @@ jobs:
                When the comment lists several repair reasons, handle all of them in this
                one repair (for example merge origin/main AND fix the review blocker).
                For "the report's verdict is not exactly `Verdict: BUILT`": after merging
-               origin/main, read changes/QUESTIONS.md there. Every flag in report.md names a
-               question ID (Q-NNN-k); a flag is settled when that file on origin/main records
-               "Q-NNN-k settled". If every flag is settled, note each under "## Flags" and set
-               "Verdict: BUILT" (AGENTS.md section 3, "Settled flags"). If any flag is not
-               settled, leave the verdict, mark the pull request as a draft
+               origin/main, read changes/QUESTIONS.md there. A flag with a question ID
+               (Q-NNN-k) is settled only when that file on origin/main records
+               "Q-NNN-k settled", merged by the planning thread. You never write a settlement
+               yourself. For each settled flag, read the answer, make any change it requires
+               inside your wall, and rerun `uv sync --locked`, `uv run ruff check .`,
+               `uv run ruff format --check .`, `uv pip check`, and `uv run pytest`. Only then
+               note it under "## Flags" ("Q-NNN-k settled on `main`") and set
+               "Verdict: BUILT", and only when every flag is settled and the checks pass. If
+               the answer needs work you cannot finish, or work outside your wall, set
+               "Verdict: BLOCKED". A flag without a question ID (AGENTS.md section 3, items
+               1, 2, 4, 5, 6) is never settled by an answer: it stays a flag. If any flag is
+               not settled, leave the verdict, mark the pull request as a draft
                (gh pr ready --undo), and stop: the question is the planning thread's.
+               The planning thread marks the draft ready for review after it merges the answer
+               to main; that is a planning action, never yours. Never resume a draft that has
+               the `hold` label or already has 2 commits whose subject starts with "repair: "
+               just because an answer exists.
                Commit with a subject starting "repair: ", update report.md's "Review findings
                and disposition" (each finding: fixed in <sha> | refuted because ...), push,
                and stop. Every push makes a new head commit, so CI and both reviews run again.

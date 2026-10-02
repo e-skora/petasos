@@ -140,6 +140,8 @@ def ready_facts(**overrides) -> PullFacts:
         "grounded_in_main": True,
         "main_changed_since_grounding": [],
         "behind_main": False,
+        "base_sha": MAIN_SHA,
+        "pinned_main_sha": MAIN_SHA,
     }
     defaults.update(overrides)
     return PullFacts(**defaults)
@@ -870,6 +872,7 @@ PRE_CHANGE_WALLS = {
             "docs/**",
             "demo/**",
             "site/**",
+            "Dockerfile",
             ".dockerignore",
             "fly.toml",
         ],
@@ -927,6 +930,7 @@ PRE_CHANGE_WALLS = {
             "docs/**",
             "scripts/**",
             "site/**",
+            "Dockerfile",
             ".dockerignore",
             "fly.toml",
         ],
@@ -1402,7 +1406,7 @@ def open_pr_dict(number: int = 1, **overrides) -> dict:
         "base": {"ref": "main", "sha": MAIN_SHA},
         "labels": [],
         "draft": False,
-        "body": "",
+        "body": BODY_TEXT,
     }
     pr.update(overrides)
     return pr
@@ -2317,3 +2321,527 @@ def test_review_blockers_step_fails_only_when_a_blocker_exists():
     assert code != 0
     assert "blocker | sample.py:1 | Problem" in out
     assert "1 blocker(s) found" in out
+
+
+# ---------------------------------------------------------------------------------------------
+# Phase 1 review regressions (review/2026-10-02-loop-phase1.md). The test names carry the finding number.
+# ---------------------------------------------------------------------------------------------
+
+NEW_MAIN = "n" * 40
+
+
+class FakeGitHubNewerBase(FakeGitHubForGather):
+    """A stable pull request whose base is NEW_MAIN, while the run pinned MAIN_SHA.
+
+    Files on `main` differ by ref: at MAIN_SHA the proposal is ratified and the plan's wall is
+    wide; at NEW_MAIN ratification was revoked (or the wall narrowed). The head contains both.
+    """
+
+    def __init__(self, proposal_at_new=PROPOSAL_TEXT, plan_at_new=PLAN_TEXT) -> None:
+        super().__init__()
+        moved = pull_full()
+        moved["base"] = {"ref": "main", "sha": NEW_MAIN}
+        self.pull_reads = [moved]
+        self.proposal_at_new = proposal_at_new
+        self.plan_at_new = plan_at_new
+
+    def file_at(self, path, ref):
+        self.file_at_calls.append((path, ref))
+        if ref == NEW_MAIN and path.endswith("proposal.md"):
+            return self.proposal_at_new
+        if ref == NEW_MAIN and path.endswith("plan.md"):
+            return self.plan_at_new
+        return super().file_at(path, ref)
+
+
+def test_f1_newer_base_revoking_ratification_does_not_merge():
+    """Finding 1, case 1: the pull request's head contains a newer main whose proposal went
+    back to `proposed`, while the run's pinned main still says ratified."""
+    fake = FakeGitHubNewerBase(proposal_at_new="status: proposed\ndepends_on: none\n")
+    gathered = gather(fake, open_pr_dict(), MAIN_SHA, frozenset({"000-bootstrap"}))
+    assert gathered.base_sha == NEW_MAIN and gathered.pinned_main_sha == MAIN_SHA
+    assert proposal_is_ratified(gathered)  # the old pin's proposal is what was read
+    assert merge_gate.BASE_MOVED_REASON in evaluate(gathered).reasons
+
+    # The same moved base, otherwise ready: main() must not send a merge request.
+    facts = ready_facts(base_sha=NEW_MAIN)
+    assert merge_gate.BASE_MOVED_REASON in evaluate(facts).reasons
+    main_fake = FakeGitHubForMain(MERGED)
+    run_main(main_fake, facts)
+    assert not puts(main_fake)
+    assert any(merge_gate.BASE_MOVED_REASON in b for b in comment_bodies(main_fake))
+
+
+def proposal_is_ratified(facts) -> bool:
+    return bool(merge_gate.RATIFIED_RE.search(facts.proposal_text or ""))
+
+
+def test_f1_newer_base_changing_the_wall_does_not_merge():
+    """Finding 1, case 2: a newer main narrowed the plan's wall; the old pin's plan is wider."""
+    narrower = PLAN_TEXT.replace("- `src/petasos/trust/**`\n", "- `src/petasos/other/**`\n")
+    fake = FakeGitHubNewerBase(plan_at_new=narrower)
+    gathered = gather(fake, open_pr_dict(), MAIN_SHA, frozenset({"000-bootstrap"}))
+    assert "src/petasos/trust/**" in parse_wall_expected(gathered.plan_text)  # the old pin's wall
+    assert merge_gate.BASE_MOVED_REASON in evaluate(gathered).reasons
+    # With every other fact fine, the moved base alone still refuses the merge.
+    facts = replace(ready_facts(), base_sha=NEW_MAIN)
+    main_fake = FakeGitHubForMain(MERGED)
+    run_main(main_fake, facts)
+    assert not puts(main_fake)
+
+
+def test_f1_base_must_equal_the_pinned_main_and_unknown_waits():
+    assert evaluate(ready_facts()).ready
+    assert_not_ready(ready_facts(base_sha=NEW_MAIN), merge_gate.BASE_MOVED_REASON)
+    assert_not_ready(ready_facts(base_sha=None), merge_gate.BASE_MOVED_REASON)
+    assert_not_ready(ready_facts(pinned_main_sha=None), merge_gate.BASE_MOVED_REASON)
+
+
+def test_f1_final_merge_check_refuses_a_base_that_moved_after_the_scan():
+    """The validated base is carried into the merge: a fresh read on another base is refused,
+    both in the re-gathered facts and in the last GET."""
+    # Re-gathered facts say the base moved.
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(fake, [ready_facts(), ready_facts(base_sha=NEW_MAIN)])
+    assert not puts(fake)
+    assert any("changed before merge" in ln and "no longer ready" in ln for ln in lines)
+    # The last GET says the base commit moved.
+    fake = FakeGitHubForMain(
+        MERGED, rereads={1: open_pr_dict(base={"ref": "main", "sha": NEW_MAIN})}
+    )
+    lines = run_main(fake, ready_facts())
+    assert not puts(fake)
+    assert any("the base commit changed" in ln for ln in lines)
+
+
+def test_f2_merge_gathers_again_against_the_pinned_main_and_keeps_the_head_sha():
+    seen = []
+
+    def spy(gh, pr, main_sha, merged):
+        seen.append((pr["number"], main_sha))
+        return ready_facts()
+
+    fake = FakeGitHubForMain(MERGED)
+    run_main(fake, ready_facts(), gather_side_effect=spy)
+    assert seen == [(1, MAIN_SHA), (1, MAIN_SHA)]  # the scan, then the merge's own reading
+    (put,) = puts(fake)
+    assert put[2]["sha"] == SHA
+
+
+@pytest.mark.parametrize(
+    "reread, said",
+    [
+        (
+            open_pr_dict(base={"ref": "release", "sha": MAIN_SHA}),
+            "the base branch is now `release`",
+        ),
+        (open_pr_dict(title="[build] 002-memory-canary-guard"), "the title changed"),
+        (open_pr_dict(body="No wall section here.\n"), "the body has no `## Wall check` section"),
+    ],
+    ids=["base-retarget", "title-change", "body-wall-removed"],
+)
+def test_f2_changed_metadata_at_the_last_read_stops_the_merge(reread, said):
+    fake = FakeGitHubForMain(MERGED, rereads={1: reread})
+    lines = run_main(fake, ready_facts())
+    assert not puts(fake)
+    assert any("changed before merge" in ln and said in ln for ln in lines)
+    assert run_main.last_code == 0
+
+
+@pytest.mark.parametrize(
+    "later, said",
+    [
+        (
+            {"base_ref": "release"},
+            "base is `release`",
+        ),
+        (
+            {
+                "title": "[build] 002-memory-canary-guard",
+                "head_ref": "build/002-memory-canary-guard",
+            },
+            "changed before merge",
+        ),
+        ({"body": "No wall section here.\n"}, "no `## Wall check` section"),
+        ({"reviews": [Review(CODEX_LOGIN, "DISMISSED", "", SHA)]}, "no Codex review"),
+        (
+            {"reviews": [Review(CODEX_LOGIN, "COMMENTED", "blocker | bad", SHA)]},
+            "a Codex finding on the head commit is a blocker",
+        ),
+        (
+            {"ci": replace(ready_facts().ci, status="in_progress")},
+            "CI is still running",
+        ),
+    ],
+    ids=[
+        "base-retarget",
+        "title-change",
+        "body-wall-removed",
+        "review-dismissed",
+        "new-blocker",
+        "rerun-started",
+    ],
+)
+def test_f2_facts_that_turn_bad_after_the_scan_stop_the_merge(later, said):
+    """The facts that were ready are old by the time the merge starts; the merge judges again."""
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(fake, [ready_facts(), ready_facts(**later)])
+    assert not puts(fake)
+    assert not any(c[0] == "DELETE" for c in fake.calls)
+    assert any("changed before merge" in ln for ln in lines)
+    assert any(said in ln for ln in lines) or said == "changed before merge"
+    assert run_main.last_code == 0
+
+
+def test_f2_a_rerun_that_starts_while_another_candidate_is_scanned_stops_the_first_merge():
+    """#1 is read ready, then #2 is read; meanwhile #1's CI reruns. #1 must not merge."""
+    fake = two_waiting_pulls()
+    reads: dict[int, int] = {}
+
+    def per_pr(gh, pr, main_sha, merged):
+        n = pr["number"]
+        reads[n] = reads.get(n, 0) + 1
+        if n == 1 and reads[1] > 1:
+            return ready_facts(number=1, ci=replace(ready_facts().ci, status="in_progress"))
+        return ready_facts(number=n)
+
+    lines = run_main(fake, ready_facts(), gather_side_effect=per_pr)
+    assert [c[1] for c in puts(fake)] == ["/pulls/2/merge"]
+    assert any("#1" in ln and "CI is still running" in ln for ln in lines)
+
+
+def test_f2_a_pull_request_that_keeps_changing_at_merge_time_waits_and_is_not_a_fault():
+    seen = {"n": 0}
+
+    def moving_at_merge(gh, pr, main_sha, merged):
+        seen["n"] += 1
+        if seen["n"] > 1:
+            raise merge_gate.PullKeptChanging(merge_gate.KEPT_CHANGING_REASON)
+        return ready_facts()
+
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(fake, ready_facts(), gather_side_effect=moving_at_merge)
+    assert not puts(fake)
+    assert run_main.last_code == 0
+    assert not any(ln.startswith("Faults:") for ln in lines)
+
+
+def test_f2_unreadable_pull_request_at_merge_time_is_a_fault_and_no_merge():
+    seen = {"n": 0}
+
+    def fails_at_merge(gh, pr, main_sha, merged):
+        seen["n"] += 1
+        if seen["n"] > 1:
+            raise OSError("network down")
+        return ready_facts()
+
+    fake = FakeGitHubForMain(MERGED)
+    run_main(fake, ready_facts(), gather_side_effect=fails_at_merge)
+    assert not puts(fake)
+    assert run_main.last_code == 1
+
+
+# ---- Finding 3: one wall_forbidden parser with a complete grammar
+
+F3_EXPECTED = "wall_expected:\n- `src/petasos/**`\n\n"
+F3_MALFORMED = {
+    "inline-no-backticks": F3_EXPECTED + "wall_forbidden: src/petasos/mcp/**\n\nMore prose.\n",
+    "unmatched-backtick": F3_EXPECTED + "wall_forbidden: `src/petasos/mcp/**\n\nMore prose.\n",
+    "prose-after-blank-line": F3_EXPECTED
+    + "wall_forbidden: plus these:\n\nDo not touch `src/petasos/mcp/**`.\n",
+    "bullet-without-path": F3_EXPECTED + "wall_forbidden: plus:\n- src/petasos/mcp/**\n",
+    "bullet-with-two-paths": F3_EXPECTED
+    + "wall_forbidden: plus:\n- `src/a/x.py` and `src/b/y.py`\n",
+    "unmatched-backtick-in-bullet": F3_EXPECTED + "wall_forbidden: plus:\n- `src/petasos/mcp/**\n",
+    "prose-after-bullets": F3_EXPECTED
+    + "wall_forbidden: plus:\n- `src/a/x.py`\nand also the mcp package\n",
+    "none-with-more-text": F3_EXPECTED + "wall_forbidden: none\n- `src/a/x.py`\n",
+    "none-with-extra-words": F3_EXPECTED + "wall_forbidden: none, mostly\n",
+    "header-only": F3_EXPECTED + "wall_forbidden:\n",
+    "section-missing": F3_EXPECTED + "More prose.\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(F3_MALFORMED))
+def test_f3_malformed_forbidden_wall_is_a_problem_never_an_empty_list(name):
+    plan = F3_MALFORMED[name]
+    _, problems = merge_gate.read_wall_forbidden(plan)
+    assert problems, name
+    assert wall_problems(plan), name
+    # A malformed restriction must not reach the gate as "no restriction": the pull request
+    # that changes a file the plan meant to forbid waits as unreadable.
+    facts = ready_facts(
+        plan_text="grounded_at: `1234567`\n\n" + plan,
+        files=[
+            FileChange("src/petasos/mcp/server.py", "modified"),
+            FileChange("changes/001-trust-core/report.md", "added"),
+        ],
+    )
+    assert_not_ready(facts, UNREADABLE)
+
+
+@pytest.mark.parametrize(
+    "plan, paths",
+    [
+        (F3_EXPECTED + "wall_forbidden: none\n\nProse.\n", []),
+        (F3_EXPECTED + "wall_forbidden: none\n", []),
+        (
+            F3_EXPECTED + "wall_forbidden: plus:\n- `src/a/x.py`\n- `src/b/**`\n\nProse.\n",
+            ["src/a/x.py", "src/b/**"],
+        ),
+        (
+            F3_EXPECTED
+            + "wall_forbidden: plus:\n- `src/a/x.py` (only the parser, `read()` stays)\n- `src/b/**`\n",
+            ["src/a/x.py", "src/b/**"],
+        ),
+        (F3_EXPECTED + "wall_forbidden: do not touch `src/a/x.py`.\n", ["src/a/x.py"]),
+    ],
+)
+def test_f3_accepted_forms_parse_to_their_paths(plan, paths):
+    assert merge_gate.read_wall_forbidden(plan) == (paths, [])
+    assert parse_wall_forbidden(plan) == paths
+    assert wall_problems(plan) == []
+
+
+def test_f3_every_current_plan_reads_through_the_single_parser_with_no_problems():
+    for name, text in current_plans().items():
+        paths, problems = merge_gate.read_wall_forbidden(text)
+        assert problems == [], name
+        assert paths == parse_wall_forbidden(text), name
+        if name in PRE_CHANGE_WALLS:
+            assert paths == PRE_CHANGE_WALLS[name][1], name
+
+
+def test_f3_a_bullet_path_without_a_slash_or_dot_is_still_forbidden():
+    plan = "wall_forbidden: plus:\n- `Dockerfile`\n- `src/a/**`\n"
+    assert merge_gate.read_wall_forbidden(plan) == (["Dockerfile", "src/a/**"], [])
+
+
+def test_f3_wall_problems_and_the_parser_share_one_reading():
+    for plan in F3_MALFORMED.values():
+        _, parser_problems = merge_gate.read_wall_forbidden(plan)
+        assert set(parser_problems) <= set(wall_problems(plan))
+
+
+# ---- Finding 4: completion evidence is separate from blocker collection
+
+
+def test_f4_dismissed_blocker_beside_a_clean_review_still_blocks():
+    facts = ready_facts(
+        reviews=[
+            Review(CODEX_LOGIN, "COMMENTED", "Looks fine.", SHA),
+            Review(CODEX_LOGIN, "DISMISSED", "blocker | the grant check is missing", SHA),
+        ]
+    )
+    assert_not_ready(facts, "a Codex finding on the head commit is a blocker")
+
+
+def test_f4_dismissed_blocker_with_a_thumbs_up_still_blocks():
+    facts = ready_facts(
+        reviews=[Review(CODEX_LOGIN, "DISMISSED", "blocker | the grant check is missing", SHA)],
+        codex_thumbs_on_request=True,
+    )
+    verdict = evaluate(facts)
+    assert not verdict.ready
+    assert NO_CODEX not in verdict.reasons  # the thumbs-up is completion evidence
+    assert any("is a blocker" in r for r in verdict.reasons)
+
+
+@pytest.mark.parametrize("body", ["[P1] tighten validation", "severity P0 here"])
+def test_f4_dismissed_badge_findings_still_block(body):
+    facts = ready_facts(
+        reviews=[
+            Review(CODEX_LOGIN, "COMMENTED", "Looks fine.", SHA),
+            Review(CODEX_LOGIN, "DISMISSED", body, SHA),
+        ]
+    )
+    assert_not_ready(facts, "is a blocker")
+
+
+def test_f4_dismissed_review_is_still_not_completion_evidence():
+    facts = ready_facts(reviews=[Review(CODEX_LOGIN, "DISMISSED", "", SHA)])
+    assert not merge_gate.has_codex_evidence(facts)
+    assert_not_ready(facts, NO_CODEX)
+
+
+def test_f4_a_dismissed_blocker_on_an_old_head_does_not_block():
+    facts = ready_facts(
+        reviews=[
+            Review(CODEX_LOGIN, "COMMENTED", "Looks fine.", SHA),
+            Review(CODEX_LOGIN, "DISMISSED", "blocker | old", OLD_SHA),
+        ]
+    )
+    assert evaluate(facts).ready
+
+
+# ---- Finding 6: ask Codex only when its review is the sole gap
+
+F6_REASONS = {
+    "missing-dependency": {"merged_changes": frozenset()},
+    "invalid-grounding": {"grounded_in_main": False},
+    "grounding-unknown": {"main_changed_since_grounding": None},
+    "malformed-wall": {
+        "plan_text": PLAN_TEXT.replace("wall_forbidden: everything", "wall_forbidden: `x").replace(
+            "`src/petasos/mcp/**` or ", "src/petasos/mcp/** or "
+        )
+    },
+    "failed-claude-review": {
+        "claude_review": replace(ready_facts().claude_review, jobs={"review": "failure"})
+    },
+    "claude-review-running": {
+        "claude_review": replace(ready_facts().claude_review, status="in_progress")
+    },
+    "no-claude-review": {"claude_review": None},
+    "base-moved": {"base_sha": NEW_MAIN},
+    "report-missing": {"report_text": None},
+    "report-not-built": {"report_text": "Verdict: BUILT WITH FLAGS\n"},
+    "no-wall-section": {"body": "nothing"},
+    "file-outside-wall": {
+        "files": default_files() + [FileChange("src/petasos/other/x.py", "added")]
+    },
+    "wrong-base-branch": {"base_ref": "release"},
+    "draft": {"draft": True},
+    "hold": {"labels": ["hold"]},
+}
+
+
+@pytest.mark.parametrize("name", sorted(F6_REASONS))
+def test_f6_codex_is_not_asked_when_anything_else_also_blocks_the_merge(name):
+    facts = ready_facts(reviews=[], **F6_REASONS[name])
+    verdict = evaluate(facts)
+    assert NO_CODEX in verdict.reasons
+    assert len(verdict.reasons) > 1, name
+    assert not should_request_codex(facts, verdict, [])
+
+
+def test_f6_codex_is_asked_when_its_review_is_the_only_gap():
+    facts = ready_facts(reviews=[])
+    verdict = evaluate(facts)
+    assert verdict.reasons == (NO_CODEX,)
+    assert should_request_codex(facts, verdict, [])
+
+
+def test_f6_the_gates_own_earlier_request_still_stops_a_second_one():
+    facts = ready_facts(reviews=[])
+    verdict = evaluate(facts)
+    own = [(GATE_LOGIN, codex_request_body(SHA))]
+    assert not should_request_codex(facts, verdict, own)
+
+
+def test_f6_main_does_not_ask_codex_when_a_hold_was_added_after_the_scan():
+    """The scan's facts have no hold; the fresh read just before posting does."""
+    fake = FakeGitHubForMain(MERGED, rereads={1: open_pr_dict(labels=[{"name": "hold"}])})
+    lines = run_main(fake, ready_facts(reviews=[]), wait_seconds="600")
+    assert not codex_request_posted(fake)
+    assert run_main.last_time.sleeps == []
+    assert any("not asking Codex" in ln and "`hold` label" in ln for ln in lines)
+    assert run_main.last_code == 0
+
+
+def test_f6_main_does_not_ask_codex_when_the_head_moved_after_the_scan():
+    fake = FakeGitHubForMain(MERGED, rereads={1: open_pr_dict(head=head_dict(OLD_SHA))})
+    run_main(fake, ready_facts(reviews=[]), wait_seconds="0")
+    assert not codex_request_posted(fake)
+
+
+def test_f6_main_does_not_ask_codex_when_the_base_or_title_changed_after_the_scan():
+    for reread in (
+        open_pr_dict(base={"ref": "release", "sha": MAIN_SHA}),
+        open_pr_dict(base={"ref": "main", "sha": NEW_MAIN}),
+        open_pr_dict(title="[build] 002-memory-canary-guard"),
+    ):
+        fake = FakeGitHubForMain(MERGED, rereads={1: reread})
+        run_main(fake, ready_facts(reviews=[]), wait_seconds="0")
+        assert not codex_request_posted(fake)
+
+
+# ---- Finding 7: a moving head during the Codex wait is ordinary waiting
+
+
+def moving_after_first_read(*args, **kwargs):
+    """The first call is the scan (needs Codex); every later call finds a moving head."""
+    moving_after_first_read.calls += 1
+    if moving_after_first_read.calls == 1:
+        return ready_facts(reviews=[])
+    raise merge_gate.PullKeptChanging(merge_gate.KEPT_CHANGING_REASON)
+
+
+def test_f7_moving_head_during_the_codex_wait_is_waiting_not_a_fault():
+    moving_after_first_read.calls = 0
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(
+        fake, ready_facts(), wait_seconds="600", gather_side_effect=moving_after_first_read
+    )
+    assert codex_request_posted(fake)
+    assert run_main.last_code == 0
+    assert not any(ln.startswith("Faults:") for ln in lines)
+    assert not any("the wait failed" in ln for ln in lines)
+    assert any(
+        "#1 waits: the pull request kept changing while the gate read it" in ln for ln in lines
+    )
+    # The older facts are never judged again, so nothing merges and nothing is listed as current.
+    assert not puts(fake)
+    assert not any("Codex answered" in ln or "no Codex answer" in ln for ln in lines)
+    assert not any("`[build] 001-trust-core` waits" in ln for ln in lines)
+
+
+def test_f7_wait_for_codex_many_reports_moving_heads_apart_from_errors():
+    ft = FakeTime()
+    seq = {"n": 0}
+
+    def gather_two(gh, pr, main_sha, merged):
+        if pr["number"] == 1:
+            raise merge_gate.PullKeptChanging(merge_gate.KEPT_CHANGING_REASON)
+        seq["n"] += 1
+        if seq["n"] == 1:
+            return ready_facts(number=2, reviews=[])
+        return ready_facts(number=2)
+
+    waiting = {
+        1: (open_pr_dict(1), ready_facts(number=1, reviews=[])),
+        2: (open_pr_dict(2), ready_facts(number=2, reviews=[])),
+    }
+    with patch.object(merge_gate, "gather", side_effect=gather_two):
+        latest, errors, moving = merge_gate.wait_for_codex_many(
+            None, waiting, MAIN_SHA, frozenset(), 600, 30, ft.sleep, ft.clock
+        )
+    assert moving == {1} and errors == {}
+    assert merge_gate.has_codex_evidence(latest[2])
+    assert ft.sleeps == [30, 30]  # #1 left the wait at once; #2 kept polling until Codex came
+
+
+def test_f7_wait_for_codex_raises_kept_changing_and_never_returns_the_old_facts():
+    ft = FakeTime()
+
+    def moves(*a, **k):
+        raise merge_gate.PullKeptChanging(merge_gate.KEPT_CHANGING_REASON)
+
+    with (
+        patch.object(merge_gate, "gather", side_effect=moves),
+        pytest.raises(merge_gate.PullKeptChanging),
+    ):
+        merge_gate.wait_for_codex(
+            None,
+            {"number": 1},
+            MAIN_SHA,
+            frozenset(),
+            ready_facts(reviews=[]),
+            600,
+            30,
+            ft.sleep,
+            ft.clock,
+        )
+
+
+def test_f7_a_real_read_error_in_the_wait_is_still_a_fault():
+    def reads_then_fails(*args, **kwargs):
+        reads_then_fails.calls += 1
+        if reads_then_fails.calls == 1:
+            return ready_facts(reviews=[])
+        raise OSError("network down")
+
+    reads_then_fails.calls = 0
+    fake = FakeGitHubForMain(MERGED)
+    lines = run_main(fake, ready_facts(), wait_seconds="600", gather_side_effect=reads_then_fails)
+    assert run_main.last_code == 1
+    assert any("the wait failed" in ln for ln in lines)
