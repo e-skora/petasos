@@ -14,9 +14,9 @@ and the browser) now share one call-logic module, so they cannot drift apart. A
 browser page served from an allowed origin gets the cross-origin headers it
 needs; every other origin, and every other endpoint, is unaffected.
 
-Commit: e560e62 on branch build/004-owner-api
+Commit: 6655231 on branch build/004-owner-api
 
-Tests: CI run pending; local count 567 passed / 0 failed / 1 skipped at e560e62
+Tests: CI run pending; local count 567 passed / 0 failed / 1 skipped at 6655231
 (advisory; the skip is `test_no_private_identifiers.py`, which skips with a
 warning when the `PRIVATE_DENYLIST` secret is absent, as it is in this sandbox).
 The whole 003 suite (every test file present before this change) passed
@@ -86,7 +86,7 @@ Flags: none.
 Review findings and disposition: blocker | `src/petasos/owner/api.py:93-100` |
 `_read_body` fell through to an unbounded `request.body()` read when the
 `Content-Length` header was present but failed `int()` parsing, bypassing
-`MAX_OWNER_BODY_BYTES` for a malformed-but-present header | fixed in e560e62
+`MAX_OWNER_BODY_BYTES` for a malformed-but-present header | fixed in ab924cd
 (the unparseable-length branch now falls through to the chunked streaming
 path, which enforces the bound regardless of the header; a regression test,
 `test_unparseable_content_length_still_bounds_body`, covers both the
