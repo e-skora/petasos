@@ -50,10 +50,13 @@ search the vendor's current documentation site for the same topic before followi
    connect the GitHub integration to `e-skora/petasos` and turn on automatic review for
    every pull request (AGENTS.md section 7).
 
-5. **Later, for change 005 (deployment).** Not needed until that change builds:
+5. **Deployment (change 005).** See `docs/deploy.md` for how a release works, the
+   first-deploy checklist, and rollback. One-time setup before the first release:
    - Create a Fly.io deploy token (a terminal with `flyctl` installed, or the Fly.io
      dashboard) and add it on github.com as `FLY_API_TOKEN`. Checked against the Fly.io
      documentation on tokens, https://fly.io/docs/flyctl/tokens-create/ (2026-09-27).
+   - `fly apps create petasos-api` and `fly volumes create petasos_data --region sjc
+     --size 1` (exactly once; a second volume would mean a second machine).
    - Create a Cloudflare API token with the zone and DNS permissions change 005 needs,
      from the Cloudflare dashboard, and add it as `CLOUDFLARE_API_TOKEN`; also record the
      account id as `CLOUDFLARE_ACCOUNT_ID`. Checked against
@@ -65,9 +68,17 @@ search the vendor's current documentation site for the same topic before followi
 
 ## Part 3: connecting an MCP client to a local server
 
-Once the app is running locally (see the README for the `uv run uvicorn` command), an
-MCP client can reach it at `http://127.0.0.1:8080/mcp` with a bearer token from the
-`tokens` mapping passed to `create_app`. Not yet tested with a live client.
+Run the server locally with `PETASOS_DB=/path/to/petasos.sqlite uv run python -m petasos.serve`.
+It reads its settings from the environment, migrates the database if needed, and
+starts listening on `http://0.0.0.0:8080`.
+
+A visitor mints a one-hour session with `POST /session`
+(`curl -X POST http://localhost:8080/session`), which returns three bearer tokens,
+one per role (visitor, agent, owner). An MCP
+(Model Context Protocol) client reaches the server at `http://localhost:8080/mcp`
+with an `Authorization: Bearer <token>` header carrying one of those tokens. See
+`docs/deploy.md` for the equivalent steps against the deployed server at
+`api.petasos.io`.
 
 **Claude Code:**
 

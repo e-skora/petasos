@@ -1,0 +1,12 @@
+.git
+.venv
+**/__pycache__
+tests
+demo
+site
+docs
+review
+changes
+scripts
+*.sqlite*
+.github
