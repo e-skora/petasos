@@ -87,6 +87,13 @@ jobs:
                inline comments on the pull request. Otherwise fix exactly the cause.
                When the comment lists several repair reasons, handle all of them in this
                one repair (for example merge origin/main AND fix the review blocker).
+               For "the report's verdict is not exactly `Verdict: BUILT`": after merging
+               origin/main, read changes/QUESTIONS.md there. Every flag in report.md names a
+               question ID (Q-NNN-k); a flag is settled when that file on origin/main records
+               "Q-NNN-k settled". If every flag is settled, note each under "## Flags" and set
+               "Verdict: BUILT" (AGENTS.md section 3, "Settled flags"). If any flag is not
+               settled, leave the verdict, mark the pull request as a draft
+               (gh pr ready --undo), and stop: the question is the planning thread's.
                Commit with a subject starting "repair: ", update report.md's "Review findings
                and disposition" (each finding: fixed in <sha> | refuted because ...), push,
                and stop. Every push makes a new head commit, so CI and both reviews run again.
@@ -96,8 +103,14 @@ jobs:
                and the options you see, push, and stop.
 
             B. Clean up stale claims. A branch named build/NNN-slug with no open pull request,
-               no merged pull request, and a newest commit more than 6 hours old is abandoned:
-               delete it (git push origin --delete build/NNN-slug). Then continue to C.
+               no merged pull request, and a newest commit more than 6 hours old is abandoned.
+               Delete it (git push origin --delete build/NNN-slug) ONLY if the one commit it
+               adds to origin/main is the empty claim commit
+               (git rev-list --count origin/main..origin/build/NNN-slug prints 1 and
+               git diff --stat origin/main...origin/build/NNN-slug prints nothing). If it holds
+               any other work, do not delete it: open one issue titled
+               "Abandoned build branch build/NNN-slug" (skip if an open issue with that title
+               exists) naming its newest commit, and leave the branch. Then continue to C.
 
             C. Build. The eligible change is the lowest-numbered changes/NNN-slug/ where ALL hold,
                reading every file from origin/main:
