@@ -1,26 +1,38 @@
 # Fly.io app config for petasos-api (ARCHITECTURE.md section 7, D-004).
-# Checked against https://fly.io/docs/reference/configuration/ on 2026-09-26.
-# Deploys are started by hand (D-015); this file is inert scaffolding until change 005.
+# Checked against https://fly.io/docs/reference/configuration/ on 2026-09-30 (plan.md).
+# Deploys are started by hand with an exact commit, never on merge (D-015, docs/deploy.md).
 
 app = "petasos-api"
-primary_region = "iad"
+primary_region = "sjc"
+kill_timeout = 40
 
-[build]
+[env]
+  PETASOS_DB = "/data/petasos.sqlite"
+  PETASOS_ARCHIVE_DIR = "/data/archive"
+
+[mounts]
+  source = "petasos_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
   min_machines_running = 1
 
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 400
+
   [[http_service.checks]]
-    interval = "15s"
-    timeout = "2s"
     grace_period = "5s"
+    interval = "15s"
     method = "GET"
     path = "/healthz"
     protocol = "http"
+    timeout = "2s"
 
 [[vm]]
   size = "shared-cpu-1x"
