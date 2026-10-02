@@ -57,6 +57,8 @@ def _route_label(path: str) -> str:
         return "session"
     if path == "/healthz":
         return "healthz"
+    if path.startswith("/owner/"):
+        return "owner"
     return "unmatched"
 
 

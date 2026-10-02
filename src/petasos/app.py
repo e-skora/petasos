@@ -23,6 +23,8 @@ from petasos.mcp.server import (
     mcp_session_manager,
     run_session_manager,
 )
+from petasos.owner import OriginGate, owner_routes
+from petasos.owner import origins as owner_origins
 from petasos.sessions.store import SessionStore
 from petasos.sessions.visitor import session_routes
 from petasos.storage import Database
@@ -41,9 +43,11 @@ def create_app(db: Database, *, clock: Callable[[], datetime]) -> FastAPI:
         async with run_session_manager(session_manager):
             yield
 
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.router.redirect_slashes = False
     app.add_middleware(IdentityMiddleware, registry=registry, clock=clock)
     app.add_middleware(GuardSeam, db=db, clock=clock)
+    app.add_middleware(OriginGate, origins=owner_origins.BROWSER_ORIGINS)
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
@@ -51,6 +55,7 @@ def create_app(db: Database, *, clock: Callable[[], datetime]) -> FastAPI:
 
     app.router.routes.extend(session_routes(session_store))
     app.router.routes.extend(mcp_routes(session_manager))
+    app.router.routes.extend(owner_routes(db, registry=registry, clock=clock))
 
     return app
 
