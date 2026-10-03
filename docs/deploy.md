@@ -179,7 +179,10 @@ first hardening step planned after v1.
 ## The edge rate limit
 
 Cloudflare sits in front of `api.petasos.io` with one rate-limiting rule (the free
-plan allows exactly one): 30 requests per 10 seconds per IP address on the paths
-`/mcp`, `/owner/`, and `/session`. The origin is also reachable directly at the
+plan allows exactly one): 100 requests per 10 seconds per IP address on the paths
+`/mcp`, `/owner/`, and `/session`. It was 30 at first, but the release smoke helper opens a fresh MCP session for each
+tool call, producing about five HTTP requests per call in that run, so the smoke journey
+alone crossed 30 in about three seconds (2026-10-03). A client that reuses its session
+makes fewer requests per call. The origin is also reachable directly at the
 app's `fly.dev` name, so this rule is a convenience, not the real protection; the
 app's own per-session quotas and global ceilings are what actually hold under load.
