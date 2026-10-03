@@ -43,12 +43,14 @@ Stop, write the situation to `changes/NNN-slug/report.md` under `## Flags`, push
 
 1. The spec and the code on `main` disagree in a way the spec did not anticipate.
 2. Completing a task would require changing a file outside your wall.
-3. A task needs a judgment call the spec does not settle (a name, a threshold, copy, a schema choice). Also append the question to `changes/QUESTIONS.md` (dated, one paragraph, ends with the options you see). This is the one file outside your wall you may append to.
+3. A task needs a judgment call the spec does not settle (a name, a threshold, copy, a schema choice). Also append the question to `changes/QUESTIONS.md` under a heading that carries a stable ID, `## Q-NNN-k YYYY-MM-DD (who)` (NNN your change number, k counting from 1), then one paragraph that ends with the options you see; name the same ID in the report's flag. This is the one file outside your wall you may append to.
 4. You would need a credential, a real external service, or a network call in tests.
 5. Anything would reopen a RATIFIED decision in `DECISIONS.md`.
 6. A test that passed on `main` fails and the failure is not explained by your change.
 
 Never improvise past a flag. A draft PR with an honest flag is a good outcome.
+
+Settled flags (D-018). Only a flag that carries a question ID (item 3) can be settled; a flag from any other item has no ID and stays a flag until the planning thread resolves it. A flag is settled when `changes/QUESTIONS.md` on `main` records an answer that names its question ID. The planning thread writes that answer on `main` as soon as it is decided, even while the build is open, in the file's status section and never at its end (a builder appends there). You never write a settlement yourself. A repair merges `main`, reads each answer, makes any change it requires inside your wall, reruns the required checks, and only then notes it under `## Flags` ("Q-NNN-k settled on `main`") and sets `Verdict: BUILT`, and only when every flag in the report is settled. If the answer needs unfinished or out-of-wall work, the verdict is `BLOCKED`. While any flag is unsettled the verdict stays `BUILT WITH FLAGS` and the PR stays a draft. The planning thread marks a settled draft ready for review after it merges the answer to `main`; that is how the repair path picks it up again. A draft with the `hold` label, or one that already has 2 `repair:` commits, is never resumed just because an answer exists.
 
 ## 4. Hard rules
 

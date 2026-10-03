@@ -12,6 +12,35 @@ finding 1 (the tick-only and append-only checks now compare whole file contents,
 diff), finding 2 (the head commit must contain the current `main`, so every piece of evidence
 was produced against the files it will merge into), and finding 3 (the status comment links
 the review run and says whether the Claude review found a problem or did not complete).
+Version 3 (2026-10-01) answers the process review (`review/2026-10-01-process-roadblocks.md`,
+findings 1, 4, 5, 6 and the missed states):
+- Finding 1: every fact about a pull request comes from one fresh `GET /pulls/{number}` read,
+  re-read after the other reads, and the gate starts over if the head or base moved; the merge
+  re-reads the pull request once more and skips if it is no longer open, is a draft, has the
+  `hold` label, or has a new head.
+- Finding 4: `wall_problems()` rejects a plan whose `wall_expected` or `wall_forbidden` could
+  be misread (wrapped lines, a blank line after the `wall_forbidden:` header, duplicates).
+- Finding 5: a CI or Claude review run that is still in progress says "still running" instead of
+  failing, and a pull request that is not open waits.
+- Finding 6: only Codex reviews in state COMMENTED, APPROVED or CHANGES_REQUESTED count; the
+  gate asks Codex only for a pull request that is otherwise eligible, and only the gate's own
+  request comments count as an earlier request.
+- Missed states: the status comment is updated after a merge or a refused merge; all candidates
+  are evaluated and one is merged before any Codex waiting; the Codex wait has one deadline for
+  the whole run; `main()` returns 1 when the gate itself failed to do something (a fault) and
+  0 when every pull request merged or is plainly waiting.
+
+Version 3.1 (2026-10-02) answers the phase 1 review (`review/2026-10-02-loop-phase1.md`, findings 1 to 7):
+the pull request's base commit must equal the `main` commit this run pinned; the gate
+re-reads and re-judges the pull request right before it merges; `wall_forbidden` has one
+parser with a complete grammar; dismissed Codex reviews still contribute blockers (they are
+only refused as proof that Codex finished); Codex is asked only when its missing review is
+the sole reason a pull request waits; and a head that keeps moving during the Codex wait is
+ordinary waiting, not a fault.
+Version 3.2 (2026-10-02) answers the phase 1 delta review (`review/2026-10-02-loop-phase1-delta.md`, Part A): the
+`wall_forbidden` parser never drops a restriction (A1); the merge re-reads the live `main` tip
+and waits if it is not the commit this run pinned (A2); and a Codex request is only posted after
+the pull request is gathered and judged again (A3).
 
 A builder pull request merges only when ALL of these hold on its current head commit H:
 
@@ -24,8 +53,11 @@ A builder pull request merges only when ALL of these hold on its current head co
    `main` itself). Any commit on `main` after the branch was cut, whatever file it touched,
    makes the pull request wait until the builder merges `main` into the branch; that push
    produces a new H, so CI and both reviews run again against the current dependencies,
-   workflows, and specs. The `main` ruleset also requires an up-to-date branch, so GitHub
-   refuses the merge itself if `main` moves between this check and the merge call.
+   workflows, and specs. The pull request's reported base commit can lag `main`, so matching
+   base fields alone do not prove `main` has not moved: the merge re-reads the live `main` tip
+   right before its final check and waits if it is not the pinned commit. The `main` ruleset
+   also requires an up-to-date branch, so GitHub refuses the merge itself if `main` moves in
+   the short interval between that check and the merge call.
 4. CI: the latest `CI` workflow run (`.github/workflows/ci.yml`, event `pull_request`) for H
    has jobs `python`, `demo`, and `private-identifiers`, each `success`.
 5. Claude review: the latest `Claude review` workflow run for H has its `review` job at
@@ -89,6 +121,17 @@ STATUS_MARKER = "<!-- petasos-merge-gate -->"
 BEHIND_MAIN_REASON = "the branch is behind `main`; merge `main` into it"
 MAX_FILES = 3000
 MAX_COMPARE_FILES = 300
+# A Codex review counts only in these states; a dismissed or pending review is not evidence.
+CODEX_REVIEW_STATES = frozenset({"COMMENTED", "APPROVED", "CHANGES_REQUESTED"})
+NOT_COMPLETED_CONCLUSIONS = frozenset({"cancelled", "timed_out", "failure", "skipped"})
+MAX_SNAPSHOT_ATTEMPTS = 3
+KEPT_CHANGING_REASON = "the pull request kept changing while the gate read it"
+NO_CODEX_REASON = "no Codex review for the head commit"
+BASE_MOVED_REASON = (
+    "the pull request's base is not the `main` commit this run pinned; it waits for a fresh scan"
+)
+# The one accepted empty form of a plan's forbidden list: `wall_forbidden: none`.
+WALL_FORBIDDEN_EMPTY = "none"
 
 TITLE_RE = re.compile(r"^\[build\] (?P<change>\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*)$")
 CHANGE_RE = re.compile(r"\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -188,6 +231,9 @@ class PullFacts:
     grounded_in_main: bool | None = None
     main_changed_since_grounding: list[str] | None = None  # None: could not list completely
     behind_main: bool | None = None  # True: the head does not contain main; None: unknown
+    state: str = "open"  # the pull request's state on GitHub: open or closed
+    base_sha: str | None = None  # the base commit GitHub reports for the pull request
+    pinned_main_sha: str | None = None  # the `main` commit this run pinned and read files at
 
 
 @dataclass(frozen=True)
@@ -240,18 +286,182 @@ def parse_wall_expected(plan_text: str) -> list[str]:
     return patterns
 
 
+def read_wall_forbidden(plan_text: str) -> tuple[list[str], list[str]]:
+    """The one parser for `wall_forbidden`: (paths, problems). Never drops a restriction.
+
+    Grammar. The section is the `wall_forbidden:` line and the lines after it up to the first
+    blank line. It is valid in exactly these shapes:
+
+    - Empty: the header text is exactly `none` (`wall_forbidden: none`) and nothing else in the
+      section. `none` means nothing anywhere else.
+    - Bullets: optional lead-in prose, then one bullet per path. A bullet is exactly optional
+      indentation, `- `, ONE backticked path, then optionally whitespace and ONE parenthetical
+      note `( ... )` that contains no backtick. Any other text on a bullet line (a second
+      backticked token anywhere, text outside the parenthetical, an unclosed parenthesis) is a
+      problem. Once bullets start, every later line in the section is a bullet.
+    - Prose with paths (the legacy form of plans 000 to 003 and the 005 header): lead-in text on
+      the header line and the following non-bullet lines. EVERY backticked token in that prose
+      is a forbidden path, with or without `/` or `.`. Over-restricting is the safe direction.
+
+    A backticked token is a path wherever it sits, so a bullet that is a problem still
+    contributes all of its tokens to the forbidden paths. Every other shape is a problem, and the
+    caller must treat the plan as unreadable: no backticked path at all (`wall_forbidden:
+    src/a/**`, `wall_forbidden: plus these:` with the list after a blank line), an unmatched
+    backtick, a bullet without a path, prose after the bullets, a bullet list that starts after
+    a blank line (any `-` line with a backtick right after the section's blank line, also after
+    `wall_forbidden: none`), and a missing or repeated header.
+    """
+    lines = plan_text.splitlines()
+    at = [i for i, ln in enumerate(lines) if ln.strip().startswith("wall_forbidden:")]
+    if not at:
+        return [], ["`wall_forbidden:` appears 0 times, expected exactly one"]
+    paths, problems = _read_forbidden_section(lines, at[0])
+    if len(at) != 1:
+        problems.append(f"`wall_forbidden:` appears {len(at)} times, expected exactly one")
+    return paths, problems
+
+
 def parse_wall_forbidden(plan_text: str) -> list[str]:
-    """Every backticked path in the `wall_forbidden:` paragraph (up to the next blank line)."""
-    patterns: list[str] = []
-    in_block = False
-    for line in plan_text.splitlines():
-        if line.strip().startswith("wall_forbidden:"):
-            in_block = True
-        elif in_block and not line.strip():
+    """The paths of `read_wall_forbidden`; use that function to learn whether the plan is valid."""
+    return read_wall_forbidden(plan_text)[0]
+
+
+def _read_forbidden_section(lines: list[str], header_at: int) -> tuple[list[str], list[str]]:
+    problems: list[str] = []
+    header_text = lines[header_at].strip()[len("wall_forbidden:") :].strip()
+    following = lines[header_at + 1] if header_at + 1 < len(lines) else None
+    if not header_text and (following is None or not following.strip()):
+        problems.append(
+            "wall_forbidden: is followed by a blank line"
+            if following is not None
+            else "wall_forbidden: has nothing after it (write `wall_forbidden: none`)"
+        )
+    end = header_at + 1
+    while end < len(lines) and lines[end].strip():
+        end += 1
+    body = lines[header_at + 1 : end]
+    after = end
+    while after < len(lines) and not lines[after].strip():
+        after += 1
+    if end < len(lines) and after < len(lines):
+        nxt = lines[after].strip()
+        if nxt.startswith("-") and "`" in nxt:
+            problems.append("wall_forbidden continues after a blank line")
+
+    paths: list[str] = []
+    for line in [lines[header_at], *body]:
+        if line.count("`") % 2:
+            problems.append(f"wall_forbidden has an unmatched backtick: {line.strip()[:60]!r}")
+        # Every backticked token is a forbidden path, in a bullet or in prose, whatever it
+        # looks like. A malformed bullet is also a problem (below), never a dropped path.
+        for token in re.findall(r"`([^`]+)`", line):
+            # The text between backticks is the exact path, spaces included: trimming it
+            # would forbid a different path (delta-2 review A4). Edge spaces and empty
+            # tokens are problems; the exact text stays forbidden either way.
+            if not token.strip():
+                problems.append(
+                    f"wall_forbidden has an empty backticked path: {line.strip()[:60]!r}"
+                )
+                continue
+            if token != token.strip():
+                problems.append(f"a wall_forbidden path starts or ends with a space: {token!r}")
+            paths.append(token)
+
+    in_bullets = False
+    for line in body:
+        stripped = line.strip()
+        if stripped.startswith("-"):
+            in_bullets = True
+            problems.extend(_forbidden_bullet_problems(stripped))
+        elif in_bullets:
+            problems.append(f"prose after the wall_forbidden bullets: {stripped[:60]!r}")
+
+    if header_text == WALL_FORBIDDEN_EMPTY:
+        if body:
+            problems.append("`wall_forbidden: none` is followed by more text in the same section")
+    elif not paths:
+        problems.append(
+            "wall_forbidden names no backticked path (write each path in backticks, "
+            "or write `wall_forbidden: none` for an empty list)"
+        )
+    return paths, problems
+
+
+def _forbidden_bullet_problems(stripped: str) -> list[str]:
+    """Problems with one stripped bullet line: it must be `- `path`` plus one optional note."""
+    tokens = re.findall(r"`([^`]+)`", stripped)
+    if not tokens:
+        return [f"a wall_forbidden bullet has no backticked path: {stripped[:60]!r}"]
+    found = re.fullmatch(r"-\s+`([^`]+)`(?:\s*(\([^`]*\)))?\s*", stripped)
+    if found is None or not _one_parenthetical(found.group(2)):
+        return [
+            (
+                "a wall_forbidden bullet must be one backticked path and at most one "
+                f"parenthetical note without backticks: {stripped[:60]!r}"
+            )
+        ]
+    return []
+
+
+def _one_parenthetical(note: str | None) -> bool:
+    """True when `note` is None or a single balanced `( ... )` that closes only at its end."""
+    if note is None:
+        return True
+    depth = 0
+    for i, ch in enumerate(note):
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth < 0 or (depth == 0 and i != len(note) - 1):
+            return False
+    return depth == 0
+
+
+def wall_problems(plan_text: str) -> list[str]:
+    """Ways a plan's wall could be misread by `parse_wall_expected` or `parse_wall_forbidden`.
+
+    The parsers are forgiving (they stop at the first surprise), which is dangerous for a
+    fence: a wrapped line ends `wall_expected` early, and a blank line after `wall_forbidden:`
+    makes its list empty. An empty list is written `wall_forbidden: none`; the complete
+    grammar is on `read_wall_forbidden`, the one parser for that section. A plan with any
+    problem here waits, so the planning thread fixes the plan instead of the gate guessing.
+    """
+    lines = plan_text.splitlines()
+    problems: list[str] = []
+    expected_at = [i for i, ln in enumerate(lines) if ln.strip().startswith("wall_expected:")]
+    if len(expected_at) != 1:
+        problems.append(f"`wall_expected:` appears {len(expected_at)} times, expected exactly one")
+    else:
+        problems.extend(_wall_expected_problems(lines, expected_at[0]))
+    problems.extend(read_wall_forbidden(plan_text)[1])
+    return problems
+
+
+def _wall_expected_problems(lines: list[str], header_at: int) -> list[str]:
+    problems: list[str] = []
+    paths = 0
+    for line in lines[header_at + 1 :]:
+        stripped = line.strip()
+        if not stripped:
+            if paths:
+                break
+            continue
+        if not stripped.startswith("-"):
+            problems.append(f"a wrapped or non-bullet line inside wall_expected: {stripped[:60]!r}")
             break
-        if in_block:
-            patterns.extend(p for p in re.findall(r"`([^`]+)`", line) if "/" in p or "." in p)
-    return patterns
+        tokens = re.findall(r"`([^`]+)`", stripped)
+        if not tokens:
+            problems.append(f"a wall_expected bullet has no backticked path: {stripped[:60]!r}")
+            continue
+        # One path per bullet. Backticks are allowed after it only inside a trailing
+        # parenthetical note, such as "(only to import `X` inside `migrate()`)".
+        rest = stripped.split(f"`{tokens[0]}`", 1)[1]
+        if "`" in rest and not re.fullmatch(r"\s*\(.*\)\s*", rest):
+            problems.append(f"a wall_expected bullet has more than one path: {stripped[:60]!r}")
+            continue
+        paths += 1
+    if not paths:
+        problems.append("wall_expected lists no paths")
+    return problems
 
 
 def parse_depends_on(proposal_text: str) -> list[str] | None:
@@ -324,8 +534,11 @@ def claude_review_failure_reason(cr: WorkflowEvidence) -> str:
             "the Claude review of the head commit completed and found a problem: read the "
             f"`{REVIEW_BLOCKERS_STEP}` step's log and the inline comments{where}"
         )
+    # Name how the job ended when GitHub says so: a cancelled or timed-out run just needs a
+    # new run, which is different from a run that failed before it could review.
+    ended = f"the job ended `{state}`" if state in NOT_COMPLETED_CONCLUSIONS else f"job `{state}`"
     return (
-        f"the Claude review of the head commit did not complete or was invalid (job `{state}`, "
+        f"the Claude review of the head commit did not complete or was invalid ({ended}, "
         f"model step `{model or 'missing'}`, check step `{check or 'missing'}`); nothing to "
         f"repair from it until a run completes{where}"
     )
@@ -375,10 +588,19 @@ def evaluate(pr: PullFacts) -> Verdict:
     change = title.group("change") if title else None
     if change is None:
         return Verdict(False, None, ("title is not `[build] NNN-slug`",))
+    if pr.state != "open":
+        reasons.append("pull request is not open")
     if pr.draft:
         reasons.append("pull request is a draft")
     if pr.base_ref != "main":
         reasons.append(f"base is `{pr.base_ref}`, not `main`")
+    # Every file read from `main` (proposal, plan, grounding, whole-file comparisons) was read
+    # at the pinned commit, so the pull request must sit on that same commit. A newer base may
+    # have revoked the ratification or changed the wall; only a fresh scan can tell. Equal
+    # base fields do not prove `main` has not moved (GitHub's base commit can lag `main`):
+    # `_Run.merge` reads the live `main` tip before its last check.
+    if pr.base_sha is None or pr.pinned_main_sha is None or pr.base_sha != pr.pinned_main_sha:
+        reasons.append(BASE_MOVED_REASON)
     if pr.head_ref != f"build/{change}":
         reasons.append(f"head branch is `{pr.head_ref}`, expected `build/{change}`")
     if not pr.head_repo_is_base_repo:
@@ -426,6 +648,11 @@ def evaluate(pr: PullFacts) -> Verdict:
         reasons.append("no CI run for the head commit")
     elif pr.ci.path != CI_WORKFLOW or pr.ci.event != "pull_request" or pr.ci.head_sha != sha:
         reasons.append("the CI evidence is not a pull request run of `ci.yml` for the head commit")
+    elif pr.ci.status != "completed":
+        # A run in progress is not a failure: one line, no per-job "missing" noise.
+        reasons.append(
+            f"CI is still running on the head commit (status `{pr.ci.status or 'unknown'}`)"
+        )
     else:
         for job in REQUIRED_CI_JOBS:
             conclusion = pr.ci.jobs.get(job)
@@ -438,17 +665,20 @@ def evaluate(pr: PullFacts) -> Verdict:
         reasons.append("no Claude review run for the head commit")
     elif cr.path != REVIEW_WORKFLOW or cr.event != "pull_request" or cr.head_sha != sha:
         reasons.append("the Claude review evidence is not a trusted run for the head commit")
+    elif cr.status != "completed":
+        reasons.append(
+            "the Claude review of the head commit is still running "
+            f"(status `{cr.status or 'unknown'}`)"
+        )
     elif cr.jobs.get(REVIEW_JOB) != "success":
         reasons.append(claude_review_failure_reason(cr))
 
-    # Codex review, bound to this exact commit.
-    codex_reviews = [r for r in pr.reviews if r.author in CODEX_LOGINS and r.commit_id == sha]
+    # Codex review, bound to this exact commit. Dismissed and pending reviews are not evidence
+    # that Codex finished, but a blocker written on this commit still blocks in any state.
+    codex_reviews = codex_reviews_on_head(pr)
     if not codex_reviews and not pr.codex_thumbs_on_request:
-        reasons.append("no Codex review for the head commit")
-    codex_texts = [r.body for r in codex_reviews] + [
-        c.body for c in pr.inline_comments if c.author in CODEX_LOGINS and c.commit_id == sha
-    ]
-    if any(is_blocker_text(t) or CODEX_BADGE_RE.search(t) for t in codex_texts):
+        reasons.append(NO_CODEX_REASON)
+    if any(is_blocker_text(t) or CODEX_BADGE_RE.search(t) for t in codex_blocker_texts(pr)):
         reasons.append("a Codex finding on the head commit is a blocker (blocker, P0, or P1)")
     if any(r.state == "CHANGES_REQUESTED" for r in codex_reviews):
         reasons.append("Codex requested changes on the head commit")
@@ -464,6 +694,8 @@ def evaluate(pr: PullFacts) -> Verdict:
     if not WALL_SECTION_RE.search(pr.body or ""):
         reasons.append("the pull request body has no `## Wall check` section")
 
+    if pr.plan_text is not None:
+        reasons.extend(f"the plan's wall is unreadable: {p}" for p in wall_problems(pr.plan_text))
     reasons.extend(wall_reasons(pr, change))
     return Verdict(not reasons, change, tuple(reasons))
 
@@ -472,13 +704,50 @@ def codex_request_body(sha: str) -> str:
     return f"@codex review\n\nMerge gate: no Codex review exists yet for head commit {sha}."
 
 
-def should_request_codex(pr: PullFacts, verdict: Verdict, existing_bodies: list[str]) -> bool:
-    """Ask Codex once per head commit, only when CI is green and its review is the gap."""
-    if "no Codex review for the head commit" not in verdict.reasons:
+def codex_blocker_texts(pr: PullFacts) -> list[str]:
+    """Everything Codex wrote on the head commit, whatever the review's state.
+
+    Completion evidence and blocker collection are separate (phase 1 review, finding 4):
+    dismissing a review is not an authorized way to clear its findings, so a blocker in a
+    dismissed or pending Codex review of this commit still blocks, exactly as before the
+    completion filter existed.
+    """
+    return [
+        r.body for r in pr.reviews if r.author in CODEX_LOGINS and r.commit_id == pr.head_sha
+    ] + [
+        c.body
+        for c in pr.inline_comments
+        if c.author in CODEX_LOGINS and c.commit_id == pr.head_sha
+    ]
+
+
+def codex_reviews_on_head(pr: PullFacts) -> list[Review]:
+    """Codex's own reviews of the head commit that prove it finished: not dismissed or pending."""
+    return [
+        r
+        for r in pr.reviews
+        if r.author in CODEX_LOGINS
+        and r.commit_id == pr.head_sha
+        and r.state in CODEX_REVIEW_STATES
+    ]
+
+
+def should_request_codex(
+    pr: PullFacts, verdict: Verdict, existing_comments: list[tuple[str, str]]
+) -> bool:
+    """Ask Codex once per head commit, and only when its review is the one thing missing.
+
+    The complete verdict must have no reason except the missing Codex review: an open, ready
+    pull request on the pinned `main` whose dependencies, grounding, wall, CI, Claude review,
+    report, and body are all fine. A Codex review of anything else is wasted, because it
+    cannot yet enable a merge. `existing_comments` is every issue comment on the pull request
+    as (author, body); only the gate's own request comments count as an earlier request
+    (anyone else can post the same text).
+    """
+    if verdict.reasons != (NO_CODEX_REASON,):
         return False
-    if pr.ci is None or any(pr.ci.jobs.get(j) != "success" for j in REQUIRED_CI_JOBS):
-        return False
-    return codex_request_body(pr.head_sha) not in existing_bodies
+    request = codex_request_body(pr.head_sha)
+    return not any(author == GATE_LOGIN and body == request for author, body in existing_comments)
 
 
 def status_body(verdict: Verdict, sha: str) -> str:
@@ -488,9 +757,59 @@ def status_body(verdict: Verdict, sha: str) -> str:
 
 
 def has_codex_evidence(facts: PullFacts) -> bool:
-    return facts.codex_thumbs_on_request or any(
-        r.author in CODEX_LOGINS and r.commit_id == facts.head_sha for r in facts.reviews
-    )
+    return facts.codex_thumbs_on_request or bool(codex_reviews_on_head(facts))
+
+
+def wait_for_codex_many(
+    gh: GitHub,
+    waiting: dict[int, tuple[dict, PullFacts]],
+    main_sha: str,
+    merged: frozenset[str],
+    budget_seconds: float,
+    poll_seconds: float,
+    sleep=None,
+    clock=None,
+) -> tuple[dict[int, PullFacts], dict[int, Exception], set[int]]:
+    """After the gate asks Codex, stay in this run until Codex answers or the budget is spent.
+
+    Codex answers a request comment minutes later, and nothing on GitHub starts a workflow
+    run when it does (a review from a bot is not an event this gate may safely run on, and
+    the schedule event is unreliable). So the run that asked keeps polling, re-reading each
+    waiting pull request from scratch (`gather`), and returns the newest facts for each.
+
+    There is ONE deadline for the whole run, `budget_seconds` from now, shared by every
+    waiting pull request: each round sleeps once and polls all of them, so two pull requests
+    never cost two budgets. A pull request leaves the wait when Codex answered, when its head
+    commit changed (the request named the old head), when it kept changing while it was read
+    (a builder pushing: ordinary waiting, listed in the third result and never a fault), or
+    when reading it failed (the error is returned for the caller to count as a fault). The
+    caller re-evaluates the facts of every pull request except the moving ones, whose older
+    facts must never be judged again.
+    """
+    sleep = sleep or _sleep
+    clock = clock or _clock
+    deadline = clock() + budget_seconds
+    latest = {number: facts for number, (_, facts) in waiting.items()}
+    errors: dict[int, Exception] = {}
+    moving: set[int] = set()
+    pending = set(waiting)
+    while pending and clock() < deadline:
+        sleep(min(poll_seconds, deadline - clock()))
+        for number in sorted(pending):
+            try:
+                latest[number] = gather(gh, waiting[number][0], main_sha, merged)
+            except PullKeptChanging:
+                moving.add(number)
+                pending.discard(number)
+                continue
+            except Exception as err:  # noqa: BLE001 (fail closed: this PR waits, run has a fault)
+                errors[number] = err
+                pending.discard(number)
+                continue
+            head_moved = latest[number].head_sha != waiting[number][1].head_sha
+            if has_codex_evidence(latest[number]) or head_moved:
+                pending.discard(number)
+    return latest, errors, moving
 
 
 def wait_for_codex(
@@ -504,22 +823,26 @@ def wait_for_codex(
     sleep=None,
     clock=None,
 ) -> PullFacts:
-    """After the gate asks Codex, stay in this run until Codex answers or the budget is spent.
+    """`wait_for_codex_many` for one pull request.
 
-    Codex answers a request comment minutes later, and nothing on GitHub starts a workflow
-    run when it does (a review from a bot is not an event this gate may safely run on, and
-    the schedule event is unreliable). So the run that asked keeps polling, re-reading the
-    pull request each time, and returns the newest facts. The caller re-evaluates them.
+    Raises if reading it failed, and raises `PullKeptChanging` when it kept changing (the
+    caller treats that as waiting); the older facts are never returned as current.
     """
-    sleep = sleep or _sleep
-    clock = clock or _clock
-    deadline = clock() + budget_seconds
-    while clock() < deadline:
-        sleep(poll_seconds)
-        facts = gather(gh, pr, main_sha, merged)
-        if has_codex_evidence(facts):
-            break
-    return facts
+    latest, errors, moving = wait_for_codex_many(
+        gh,
+        {facts.number: (pr, facts)},
+        main_sha,
+        merged,
+        budget_seconds,
+        poll_seconds,
+        sleep,
+        clock,
+    )
+    if facts.number in errors:
+        raise errors[facts.number]
+    if facts.number in moving:
+        raise PullKeptChanging(KEPT_CHANGING_REASON)
+    return latest[facts.number]
 
 
 def _sleep(seconds: float) -> None:
@@ -618,13 +941,56 @@ def login(obj: dict) -> str:
     return (obj.get("user") or {}).get("login", "")
 
 
+class PullKeptChanging(Exception):
+    """What admission depends on in a pull request moved on every attempt to read it."""
+
+
+def _admission_view(full: dict) -> tuple:
+    """Everything in one `GET /pulls/{n}` that admission depends on (delta-2 review A5): head
+    and base commits, head repository, base branch, open state, draft flag, labels, title, and
+    body. If any of it differs between the first and last read of a snapshot, reading starts
+    over, so a `hold` or draft that lands mid-read is never dropped."""
+    head = full.get("head") or {}
+    base = full.get("base") or {}
+    return (
+        head.get("sha") or "",
+        base.get("sha") or "",
+        (head.get("repo") or {}).get("full_name") or "",
+        base.get("ref") or "",
+        full.get("state"),
+        bool(full.get("draft")),
+        tuple(sorted((label.get("name") or "") for label in full.get("labels") or [])),
+        full.get("title"),
+        full.get("body") or "",
+    )
+
+
 def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullFacts:
+    """Read one pull request as a single snapshot (process review finding 1).
+
+    Only `pr["number"]` comes from the caller (the list response may be stale: a label or a
+    push can land between the list and now). Every other fact comes from ONE fresh
+    `GET /pulls/{number}`, then the files, evidence, and report are read for that head. After
+    reading, the pull request is fetched again; if anything in `_admission_view` changed
+    meanwhile (head, base, labels, draft, title, body, ...), the reading starts over, at most
+    MAX_SNAPSHOT_ATTEMPTS times, then PullKeptChanging.
+    """
     number = pr["number"]
-    sha = pr["head"]["sha"]
-    title = TITLE_RE.match(pr["title"])
+    for _ in range(MAX_SNAPSHOT_ATTEMPTS):
+        full = gh.request("GET", f"/pulls/{number}")
+        facts = _gather_snapshot(gh, number, full, main_sha, merged)
+        if _admission_view(gh.request("GET", f"/pulls/{number}")) == _admission_view(full):
+            return facts
+    raise PullKeptChanging(KEPT_CHANGING_REASON)
+
+
+def _gather_snapshot(
+    gh: GitHub, number: int, full: dict, main_sha: str, merged: frozenset[str]
+) -> PullFacts:
+    sha = full["head"]["sha"]
+    title = TITLE_RE.match(full["title"])
     change = title.group("change") if title else None
 
-    full = gh.request("GET", f"/pulls/{number}")
     raw_files = gh.paged(f"/pulls/{number}/files")
     shape_checked = {f"changes/{change}/tasks.md", QUESTIONS_PATH} if change else set()
     files = []
@@ -672,14 +1038,14 @@ def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullF
 
     return PullFacts(
         number=number,
-        title=pr["title"],
-        draft=bool(pr.get("draft")),
-        base_ref=pr["base"]["ref"],
-        head_ref=pr["head"]["ref"],
+        title=full["title"],
+        draft=bool(full.get("draft")),
+        base_ref=full["base"]["ref"],
+        head_ref=full["head"]["ref"],
         head_sha=sha,
-        head_repo_is_base_repo=(pr["head"].get("repo") or {}).get("full_name") == gh.repo,
-        labels=[label["name"] for label in pr.get("labels", [])],
-        body=pr.get("body") or "",
+        head_repo_is_base_repo=(full["head"].get("repo") or {}).get("full_name") == gh.repo,
+        labels=[label["name"] for label in full.get("labels") or []],
+        body=full.get("body") or "",
         files=files,
         files_complete=complete,
         ci=gh.latest_run(CI_WORKFLOW, sha),
@@ -700,6 +1066,9 @@ def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullF
         grounded_in_main=in_main,
         main_changed_since_grounding=since_grounding,
         behind_main=behind,
+        state=full.get("state", ""),
+        base_sha=(full.get("base") or {}).get("sha"),
+        pinned_main_sha=main_sha,
     )
 
 
@@ -735,6 +1104,37 @@ def summary(lines: list[str]) -> None:
             fh.write(text)
 
 
+def metadata_changes(fresh: dict, facts: PullFacts, repo: str) -> list[str]:
+    """What changed in a fresh `GET /pulls/{n}` since `facts` were judged ready to act on.
+
+    Everything `evaluate()` relies on that one GET can show: open state, draft flag, hold
+    label, title (the change identity), base branch and base commit, head commit and
+    repository, and the required `## Wall check` section of the body.
+    """
+    changed = []
+    if fresh.get("state") != "open":
+        changed.append(f"it is `{fresh.get('state')}`")
+    if fresh.get("draft"):
+        changed.append("it is a draft")
+    if HOLD_LABEL in [label.get("name") for label in fresh.get("labels") or []]:
+        changed.append("the `hold` label was added")
+    if fresh.get("title") != facts.title:
+        changed.append("the title changed")
+    base = fresh.get("base") or {}
+    if base.get("ref") != facts.base_ref:
+        changed.append(f"the base branch is now `{base.get('ref')}`")
+    if base.get("sha") != facts.base_sha:
+        changed.append("the base commit changed")
+    head = fresh.get("head") or {}
+    if head.get("sha") != facts.head_sha:
+        changed.append("the head commit changed")
+    if (head.get("repo") or {}).get("full_name") != repo:
+        changed.append("the head repository changed")
+    if not WALL_SECTION_RE.search(fresh.get("body") or ""):
+        changed.append("the body has no `## Wall check` section")
+    return changed
+
+
 def main() -> int:
     token = os.environ["GITHUB_TOKEN"]
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -755,80 +1155,271 @@ def main() -> int:
     merged_set = merged_changes(gh)
     lines.append(f"Evaluated against `main` at `{main_sha}`.")
     lines.append("")
-    merged_one = False
+    run = _Run(gh, lines, dry_run, main_sha, merged_set)
+
+    # Phase 1: read and judge every candidate before doing anything slow or irreversible.
+    judged: list[tuple[dict, PullFacts, Verdict]] = []
     for pr in candidates:
         try:
             facts = gather(gh, pr, main_sha, merged_set)
             verdict = evaluate(facts)
-        except Exception as err:  # noqa: BLE001 (fail closed: an error means this PR waits)
-            lines.append(f"- #{pr['number']} waits: the gate could not read it ({err!r}).")
+        except PullKeptChanging:
+            # The builder is pushing; that is waiting, not a fault of the gate.
+            lines.append(f"- #{pr['number']} waits: {KEPT_CHANGING_REASON}.")
             continue
-        if not verdict.ready and not dry_run:
-            try:
-                post_status(gh, facts.number, status_body(verdict, facts.head_sha))
-                bodies = [c.get("body") or "" for c in gh.paged(f"/issues/{facts.number}/comments")]
-                if should_request_codex(facts, verdict, bodies):
-                    gh.request(
-                        "POST",
-                        f"/issues/{facts.number}/comments",
-                        {"body": codex_request_body(facts.head_sha)},
+        except Exception as err:  # noqa: BLE001 (fail closed: an error means this PR waits)
+            run.fault(f"- #{pr['number']} waits: the gate could not read it ({err!r}).")
+            continue
+        judged.append((pr, facts, verdict))
+
+    # Phase 2: merge at most one ready pull request, oldest first, before any waiting.
+    not_ready: list[tuple[dict, PullFacts, Verdict]] = []
+    for pr, facts, verdict in judged:
+        if not verdict.ready:
+            not_ready.append((pr, facts, verdict))
+        else:
+            run.merge_or_defer(facts)
+
+    # Phase 3: for the rest, keep the status comment current and ask Codex where it can help.
+    # After a merge in this run, every other head is behind the new `main` and needs a sync
+    # first, so a Codex review of it would be thrown away: no requests then.
+    requested: dict[int, tuple[dict, PullFacts]] = {}
+    for pr, facts, verdict in not_ready:
+        if dry_run:
+            continue
+        run.status(facts, status_body(verdict, facts.head_sha))
+        if run.merged_one:
+            continue
+        try:
+            comments = gh.paged(f"/issues/{facts.number}/comments")
+            existing = [(login(c), c.get("body") or "") for c in comments]
+            if should_request_codex(facts, verdict, existing):
+                # The facts are from before the other candidates were read: gather and judge
+                # the pull request again, and ask only if it is still the same head and
+                # Codex's missing review is still the one thing it waits for.
+                try:
+                    fresh = gather(gh, {"number": facts.number}, main_sha, merged_set)
+                except PullKeptChanging:
+                    lines.append(
+                        f"- #{facts.number} waits: {KEPT_CHANGING_REASON}; not asking Codex."
                     )
-                    lines.append(f"- #{facts.number}: asked Codex to review the head commit.")
-                    if codex_budget > 0:
-                        facts = wait_for_codex(
-                            gh, pr, main_sha, merged_set, facts, codex_budget, codex_poll
-                        )
-                        verdict = evaluate(facts)
-                        lines.append(
-                            "  - Codex answered; re-evaluated."
-                            if has_codex_evidence(facts)
-                            else f"  - no Codex answer within {codex_budget:.0f} seconds."
-                        )
-                        if not verdict.ready:
-                            post_status(gh, facts.number, status_body(verdict, facts.head_sha))
-            except Exception as err:  # noqa: BLE001 (fail closed: this PR waits)
-                lines.append(f"  - the status, the Codex request, or the wait failed ({err!r}).")
+                    continue
+                fresh_verdict = evaluate(fresh)
+                if fresh.head_sha != facts.head_sha or not should_request_codex(
+                    fresh, fresh_verdict, existing
+                ):
+                    lines.append(f"- #{facts.number}: not asking Codex, it changed since the scan.")
+                    continue
+                facts = fresh
+                gh.request(
+                    "POST",
+                    f"/issues/{facts.number}/comments",
+                    {"body": codex_request_body(facts.head_sha)},
+                )
+                lines.append(f"- #{facts.number}: asked Codex to review the head commit.")
+                requested[facts.number] = (pr, facts)
+        except Exception as err:  # noqa: BLE001 (fail closed: this PR waits)
+            run.fault(f"- #{facts.number}: the Codex request failed ({err!r}).")
+
+    # Phase 4: one wait for the whole run. Only worth it while no pull request has merged
+    # (one merge per run), because only a merge could come out of it.
+    final = {facts.number: (facts, verdict) for _, facts, verdict in not_ready}
+    before = {facts.number: verdict.reasons for _, facts, verdict in not_ready}
+    if requested and codex_budget > 0 and not run.merged_one:
+        latest, errors, moving = wait_for_codex_many(
+            gh, requested, main_sha, merged_set, codex_budget, codex_poll
+        )
+        for number, (_, old_facts) in requested.items():
+            if number in errors:
+                run.fault(f"  - #{number}: the wait failed ({errors[number]!r}).")
+                continue
+            if number in moving:
+                # A builder is pushing: waiting, not a fault. The facts from before the wait
+                # are old, so they are neither judged again nor listed as current.
+                lines.append(f"  - #{number} waits: {KEPT_CHANGING_REASON}.")
+                final.pop(number, None)
+                continue
+            facts = latest[number]
+            verdict = evaluate(facts)
+            final[number] = (facts, verdict)
+            lines.append(
+                f"  - #{number}: Codex answered; re-evaluated."
+                if has_codex_evidence(facts)
+                else f"  - #{number}: no Codex answer within {codex_budget:.0f} seconds."
+            )
+            if verdict.ready:
+                run.merge_or_defer(facts)
+            elif facts.head_sha != old_facts.head_sha or verdict.reasons != before[number]:
+                run.status(facts, status_body(verdict, facts.head_sha))
+
+    for facts, verdict in final.values():
         if not verdict.ready:
             lines.append(f"- #{facts.number} `{facts.title}` waits:")
             lines.extend(f"  - {r}" for r in verdict.reasons)
-            continue
-        if merged_one:
-            lines.append(f"- #{facts.number} is ready; it merges on the next run (one per run).")
-            continue
-        if dry_run:
-            lines.append(f"- #{facts.number} is ready (dry run, not merged).")
-            merged_one = True
-            continue
+
+    if run.faults:
+        lines.append(f"Faults: {run.faults}")
+    summary(lines)
+    return 1 if run.faults else 0
+
+
+class _Run:
+    """What one run of the gate has done so far: its summary lines, merges, and faults.
+
+    A fault is the gate failing to do something it set out to do (read a pull request, post
+    a comment, ask Codex, merge, clean up). A pull request that is plainly waiting is not.
+    """
+
+    def __init__(
+        self,
+        gh: GitHub,
+        lines: list[str],
+        dry_run: bool,
+        main_sha: str,
+        merged: frozenset[str],
+    ) -> None:
+        self.gh = gh
+        self.lines = lines
+        self.dry_run = dry_run
+        self.main_sha = main_sha  # the commit this run pinned; the merge is judged against it
+        self.merged = merged
+        self.merged_one = False  # a merge happened (or, in a dry run, would have)
+        self.faults = 0
+
+    def fault(self, line: str) -> None:
+        self.faults += 1
+        self.lines.append(line)
+
+    def status(self, facts: PullFacts, body: str) -> None:
+        if self.dry_run:
+            return
+        try:
+            post_status(self.gh, facts.number, body)
+        except Exception as err:  # noqa: BLE001 (fail closed: this PR waits)
+            self.fault(f"  - #{facts.number}: posting the status comment failed ({err!r}).")
+
+    def merge_or_defer(self, facts: PullFacts) -> None:
+        if self.merged_one:
+            self.lines.append(
+                f"- #{facts.number} is ready; it merges on the next run (one per run)."
+            )
+        elif self.dry_run:
+            self.lines.append(f"- #{facts.number} is ready (dry run, not merged).")
+            self.merged_one = True
+        else:
+            self.merged_one = self.merge(facts)
+
+    def merge(self, facts: PullFacts) -> bool:
+        """Judge the pull request again, merge it if nothing changed, and clean up.
+
+        The facts that made it ready may be minutes old (other candidates were read after it,
+        and Codex may have been waited for). So the merge first re-gathers and re-evaluates
+        the pull request against the still-pinned `main` (fresh metadata, CI, Claude review,
+        Codex reviews), requires the same head and base as the facts that were judged ready,
+        and only then re-reads the pull request once more, as close to the merge request as a
+        GET allows. Matching base fields do not prove `main` is unmoved, so right after
+        re-gathering (before the final admission check) it reads the live `main` tip and waits
+        if it is not the commit this run pinned; a failed read is a fault. The ruleset's strict
+        up-to-date rule covers the interval after that read. True if merged.
+        """
+        gh, lines, n = self.gh, self.lines, facts.number
+        try:
+            again = gather(gh, {"number": n}, self.main_sha, self.merged)
+        except PullKeptChanging:
+            lines.append(f"- #{n} waits: {KEPT_CHANGING_REASON}; it was not merged.")
+            return False
+        except Exception as err:  # noqa: BLE001
+            self.fault(
+                f"- #{n} was ready but the gate could not re-read it before merging ({err!r})."
+            )
+            return False
+        try:
+            live_main = gh.request("GET", "/branches/main")["commit"]["sha"]
+        except Exception as err:  # noqa: BLE001
+            self.fault(
+                f"- #{n} was ready but the gate could not read `main` before merging ({err!r})."
+            )
+            return False
+        if live_main != self.main_sha:
+            lines.append(
+                f"- #{n} waits: `main` moved to `{live_main}` since this run pinned "
+                f"`{self.main_sha}`; it was not merged."
+            )
+            return False
+        verdict = evaluate(again)
+        stale = []
+        if not verdict.ready:
+            stale.append("it is no longer ready: " + "; ".join(verdict.reasons))
+        if again.head_sha != facts.head_sha:
+            stale.append("the head commit changed")
+        if again.base_sha != facts.base_sha:
+            stale.append("the base commit changed")
+        if stale:
+            lines.append(
+                f"- #{n} changed before merge ({'; '.join(stale)}); it waits for the next run."
+            )
+            if not verdict.ready:
+                self.status(again, status_body(verdict, again.head_sha))
+            return False
+        try:
+            fresh = gh.request("GET", f"/pulls/{n}")
+        except Exception as err:  # noqa: BLE001
+            self.fault(
+                f"- #{n} was ready but the gate could not re-read it before merging ({err!r})."
+            )
+            return False
+        changed = metadata_changes(fresh, facts, gh.repo)
+        if changed:
+            lines.append(
+                f"- #{n} changed before merge ({'; '.join(changed)}); it waits for the next run."
+            )
+            return False
         try:
             result = gh.request(
                 "PUT",
-                f"/pulls/{facts.number}/merge",
+                f"/pulls/{n}/merge",
                 {
                     "merge_method": "squash",
                     "sha": facts.head_sha,
-                    "commit_title": f"{facts.title} (#{facts.number})",
+                    "commit_title": f"{facts.title} (#{n})",
                 },
             )
-        except urllib.error.HTTPError as err:
-            lines.append(f"- #{facts.number} was ready but GitHub refused the merge ({err.code}).")
-            continue
+        except Exception as err:  # noqa: BLE001 (the merge may or may not have happened)
+            why = _why(err)
+            self.fault(f"- #{n} was ready but GitHub refused the merge ({why}).")
+            self.status(facts, _merge_problem_body(facts, f"GitHub refused the merge ({why})"))
+            return False
         if not (isinstance(result, dict) and result.get("merged") is True and result.get("sha")):
-            lines.append(f"- #{facts.number} was ready but GitHub did not confirm a merge.")
-            continue
-        merged_one = True
-        lines.append(f"- #{facts.number} `{facts.title}` merged as `{result['sha']}`.")
+            self.fault(f"- #{n} was ready but GitHub did not confirm a merge.")
+            self.status(facts, _merge_problem_body(facts, "GitHub did not confirm the merge"))
+            return False
+        lines.append(f"- #{n} `{facts.title}` merged as `{result['sha']}`.")
+        self.status(
+            facts,
+            f"{STATUS_MARKER}\n**Merge gate** for head commit `{facts.head_sha}`: "
+            f"merged as `{result['sha']}`.",
+        )
         try:
             gh.request("DELETE", f"/git/refs/heads/{facts.head_ref}")
-        except urllib.error.HTTPError as err:
-            lines.append(f"  - branch `{facts.head_ref}` not deleted ({err.code}).")
+        except Exception as err:  # noqa: BLE001
+            self.fault(f"  - branch `{facts.head_ref}` not deleted ({_why(err)}).")
         try:
             gh.request("POST", "/actions/workflows/ci.yml/dispatches", {"ref": "main"})
             lines.append("  - CI dispatched on `main` (a merge made by this token starts no run).")
-        except urllib.error.HTTPError as err:
-            lines.append(f"  - CI dispatch on `main` failed ({err.code}).")
+        except Exception as err:  # noqa: BLE001
+            self.fault(f"  - CI dispatch on `main` failed ({_why(err)}).")
+        return True
 
-    summary(lines)
-    return 0
+
+def _why(err: Exception) -> object:
+    return err.code if isinstance(err, urllib.error.HTTPError) else repr(err)
+
+
+def _merge_problem_body(facts: PullFacts, problem: str) -> str:
+    return (
+        f"{STATUS_MARKER}\n**Merge gate** for head commit `{facts.head_sha}`: ready, but "
+        f"{problem}. The gate tries again on its next run."
+    )
 
 
 if __name__ == "__main__":

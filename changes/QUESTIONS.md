@@ -1,6 +1,6 @@
 # QUESTIONS.md: open questions for Elias
 
-Append-only for agents. Elias answers by deleting the entry (and adding a decision to DECISIONS.md if the answer should hold from here on). Newest at the bottom.
+Append-only for agents. Each new entry starts with a heading that carries a stable ID, `## Q-NNN-k YYYY-MM-DD (who)` (AGENTS.md section 3). An answer is written on `main` in the status section below, as `Q-NNN-k settled YYYY-MM-DD: <answer>`, never by appending at the end of this file, because a builder's open entry may be appended there on its branch. The entry itself is deleted after its build merges. An answer that should hold from here on also goes to DECISIONS.md. Newest at the bottom.
 
 ## 2026-09-26 (Cowork thread, drafting the doc set)
 
