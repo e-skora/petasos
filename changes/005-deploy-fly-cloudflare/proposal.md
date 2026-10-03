@@ -1,8 +1,8 @@
 # Proposal: 005-deploy-fly-cloudflare
 
-status: proposed
+status: ratified
 lane: claude
-depends_on: 003-mcp-server-helpdesk
+depends_on: 003-mcp-server-helpdesk, 004-owner-api
 decisions: D-004, D-015, D-016, D-017
 
 ## Why
