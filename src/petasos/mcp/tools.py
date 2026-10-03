@@ -17,35 +17,14 @@ from mcp_types import CallToolResult, TextContent
 from petasos.helpdesk import ReadCapture, build_registry
 from petasos.mcp.identity import Identity
 from petasos.mcp.outcomes import MCP_SENTENCES
+from petasos.mcp.service import ALLOWED_TOOLS, TOOL_ARG_SPEC, approval_card, approve_and_run
 from petasos.memory.store import MemoryStore
 from petasos.trust import SENTENCES, Gate, Result
-from petasos.trust.record import record_as_dict
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
     from petasos.storage import Database
-
-_VISITOR_TOOLS = frozenset({"ping", "list_tickets", "get_ticket", "recall"})
-_AGENT_TOOLS = _VISITOR_TOOLS | frozenset(
-    {"add_internal_note", "reply_to_customer", "issue_refund", "delete_ticket"}
-)
-_OWNER_TOOLS = _AGENT_TOOLS | frozenset({"list_pending_approvals", "approve", "abort"})
-ALLOWED_TOOLS = {"visitor": _VISITOR_TOOLS, "agent": _AGENT_TOOLS, "owner": _OWNER_TOOLS}
-
-TOOL_ARG_SPEC: dict[str, dict[str, type]] = {
-    "ping": {},
-    "list_tickets": {},
-    "get_ticket": {"ticket": int},
-    "recall": {"query": str},
-    "add_internal_note": {"ticket": int, "text": str},
-    "reply_to_customer": {"ticket": int, "body": str},
-    "issue_refund": {"ticket": int, "amount": str, "currency": str},
-    "delete_ticket": {"ticket": int},
-    "list_pending_approvals": {},
-    "approve": {"token": str, "verb": str},
-    "abort": {"token": str},
-}
 
 
 class GateFactory:
@@ -182,17 +161,7 @@ def register_tools(server: MCPServer, *, db: Database, clock: Callable[[], datet
             return mcp_refusal("refused/not_allowed")
         gate = factory.for_call(identity, ReadCapture())
         grants = gate.grants.list_pending(viewer=identity.id)
-        cards = [
-            {
-                "grant_id": grant.id,
-                "token": grant.token,
-                "verb": grant.verb,
-                "tier": grant.tier.value,
-                "record": record_as_dict(grant.record),
-                "expires_at": grant.expires_at.isoformat(),
-            }
-            for grant in grants
-        ]
+        cards = [approval_card(grant) for grant in grants]
         return _ok_result(cards)
 
     async def approve(token: str, verb: str, ctx: Context) -> CallToolResult:
@@ -200,9 +169,7 @@ def register_tools(server: MCPServer, *, db: Database, clock: Callable[[], datet
         if not identity.approver:
             return mcp_refusal("refused/not_allowed")
         gate = factory.for_call(identity, ReadCapture())
-        result = gate.grants.approve(token=token, verb=verb, approver=identity.id)
-        if result.code == "approved":
-            result = gate.executor.run(result.grant_id)
+        result = approve_and_run(gate, token=token, verb=verb, approver=identity.id)
         return tool_result(result)
 
     async def abort(token: str, ctx: Context) -> CallToolResult:
@@ -226,3 +193,14 @@ def register_tools(server: MCPServer, *, db: Database, clock: Callable[[], datet
         abort,
     ):
         server.add_tool(fn)
+
+
+__all__ = [
+    "ALLOWED_TOOLS",
+    "TOOL_ARG_SPEC",
+    "GateFactory",
+    "mcp_refusal",
+    "register_tools",
+    "result_json",
+    "tool_result",
+]

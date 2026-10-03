@@ -15,22 +15,15 @@ from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, Streamable
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.routing import Route
 
-from petasos.mcp.tools import ALLOWED_TOOLS, TOOL_ARG_SPEC, mcp_refusal, register_tools
+from petasos.mcp.service import ALLOWED_TOOLS, TOOL_ARG_SPEC
+from petasos.mcp.service import shape_ok as _shape_ok
+from petasos.mcp.tools import mcp_refusal, register_tools
 from petasos.sessions import quotas
 
 if TYPE_CHECKING:
     from petasos.storage import Database
 
 MCP_PATH = "/mcp"
-
-
-def _shape_ok(name: str, arguments: Any) -> bool:
-    spec = TOOL_ARG_SPEC.get(name)
-    if spec is None or not isinstance(arguments, Mapping):
-        return False
-    if set(arguments) != set(spec):
-        return False
-    return all(type(arguments[key]) is expected for key, expected in spec.items())
 
 
 def _identity_or_none(ctx: ServerRequestContext) -> Any:
@@ -153,3 +146,16 @@ async def run_session_manager(session_manager: StreamableHTTPSessionManager) -> 
     app's rather than a mounted sub-app's, whose lifespan Starlette never runs."""
     async with session_manager.run():
         yield
+
+
+__all__ = [
+    "ALLOWED_TOOLS",
+    "MCP_PATH",
+    "TOOL_ARG_SPEC",
+    "ToolAccessMiddleware",
+    "_shape_ok",
+    "build_mcp_server",
+    "mcp_routes",
+    "mcp_session_manager",
+    "run_session_manager",
+]
