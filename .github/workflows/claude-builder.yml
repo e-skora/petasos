@@ -9,7 +9,7 @@
 # - Scheduled runs work with no pull request or issue; `id-token: write` is needed for the
 #   Claude GitHub App. https://code.claude.com/docs/en/github-actions
 # - Bash commands must be listed in `--allowedTools` inside `claude_args`; there is no
-#   timeout input, so the job-level `timeout-minutes` bounds a run. `additional_permissions`
+#   timeout input, so `timeout-minutes` bounds a run. `additional_permissions`
 #   with `actions: read` lets Claude read workflow runs and logs.
 #   https://github.com/anthropics/claude-code-action/blob/main/docs/configuration.md
 # - setup-uv's `python-version` input sets UV_PYTHON; uv downloads that Python if missing.
@@ -17,21 +17,30 @@
 # - GitHub runs schedules from the default branch only and, in a public repository, turns
 #   them off after 60 days with no activity.
 #
-# Result check (loop-recovery 2.3). A run on 2026-10-02 lasted 83 minutes, reported success,
-# pushed only its empty claim commit and opened no pull request, and nothing noticed. So the
-# builder now returns a structured result (`--json-schema`, read back as the `structured_output`
-# step output, the same way claude-review.yml does), and the "Check the builder result (no model)"
-# step runs even when the builder fails. It compares the result with the open `[build]` pull
-# requests and `build/*` branches recorded before the run (`id: before`) and fails the job, with
-# one plain sentence per problem, if the result is missing or does not match GitHub. The rules are
-# in .github/scripts/builder_result.py. If the run ends without a result, the action itself fails
-# its step and leaves `structured_output` empty, which the check also reports. The builder checks
-# out other branches, so the checker is copied to the runner's temp folder before the builder runs.
+# Result check (loop-recovery 2.3, corrected after the phase 1 third-delta review D1 to D5).
+# A run on 2026-10-02 lasted 83 minutes, reported success, pushed only its empty claim commit
+# and opened no pull request, and nothing noticed. So the builder returns a structured result
+# (`--json-schema`, read back as `structured_output`), and three jobs keep the evidence out of
+# the builder's reach:
+# - `snapshot` runs first, on its own runner, from `main` at the run's commit, with read-only
+#   permissions. It records the open `[build]` pull requests, the `build/*` branches, the merge
+#   gate's status on each, commit ages, repair counts, and the change queue, and derives what
+#   the builder was supposed to do. The record is this job's output, bound to the repository,
+#   run, and attempt; no later job can change a finished job's outputs.
+# - `build` runs the builder. Nothing the builder can write is read by the verifier.
+# - `verify` runs on a fresh runner whatever `build` ended as (`always()`), from `main` at the
+#   run's commit, with read-only permissions, and compares the result with the snapshot output
+#   and a fresh read of GitHub (.github/scripts/builder_result.py). A missing record, a missing
+#   result, or a builder job that did not succeed fails it.
+# Limits, stated plainly: `verify` has its own 10-minute budget and its own runner, so a hung
+# or lost builder runner does not take the check with it, and the builder step stops at 75
+# minutes. A run whose `verify` job never starts (an Actions outage, the whole run lost) shows
+# as a failed or missing run, not a diagnosis; the heartbeat (loop recovery 2.2) is what
+# notices that.
 #
 # One run at a time (the concurrency group). The queue rules below are the queue-recovery rule
 # in DECISIONS.md D-015. The merge gate re-checks eligibility itself; these rules only keep the
 # builder from wasting a run.
-
 name: Claude builder
 
 on:
@@ -39,38 +48,63 @@ on:
     - cron: "17 */2 * * *"
   workflow_dispatch: {}
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: read
-  id-token: write
+permissions: {}
 
 concurrency:
   group: claude-builder
   cancel-in-progress: false
 
 jobs:
-  build:
+  snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      state: ${{ steps.before.outputs.state }}
+    steps:
+      - name: Run from main only
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "The builder runs from main only, not ${{ github.ref_name }}." >&2
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record the starting state (trusted, before the builder)
+        id: before
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/builder_result.py --snapshot-output
+
+  build:
+    needs: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
+    outputs:
+      result: ${{ steps.claude.outputs.structured_output }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Install uv and Python 3.12
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           python-version: "3.12"
-      - name: Record the starting state
-        id: before
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cp .github/scripts/builder_result.py "$RUNNER_TEMP/builder_result.py"
-          python3 "$RUNNER_TEMP/builder_result.py" --snapshot "$RUNNER_TEMP/builder-before.json"
+
       - name: Run Claude Code builder
         id: claude
+        timeout-minutes: 75
         uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -148,19 +182,39 @@ jobs:
             `pull_request` is the pull request number, `change` is NNN-slug, and `head` is the
             full 40-character sha you last pushed; for no-op all three are null. `reason` is one
             plain sentence, except for no-op, where it must be exactly one of: nothing_eligible,
-            waiting_on_reviews, waiting_on_planning, repairs_exhausted, held. A script compares
-            the result with GitHub after you finish and fails the job if they disagree.
+            waiting_on_reviews, waiting_on_planning, repairs_exhausted, held. Use the no-op reason
+            that is true: nothing_eligible (no change is eligible and no open build pull request is
+            ready and unheld), waiting_on_reviews (an open, ready, unheld pull request waits for
+            CI or reviews, with nothing to repair), waiting_on_planning (an open build pull
+            request is a draft), repairs_exhausted (an open draft has already used both repairs),
+            held (an open build pull request has the hold label). A separate job, on another
+            runner, checks the result against GitHub and the change queue after you finish and
+            fails the run if they disagree; it reads nothing you write in this job.
 
             Never merge. Never approve your own pull request. Never post a comment that imitates
             a review or the merge gate. Never edit a proposal's status, a spec, a plan,
             pyproject.toml, uv.lock, anything under .github/, or any other standing-forbidden
             path. If you hit a stop-and-flag condition from AGENTS.md section 3, write the flag
             into the report and open the pull request as a draft.
-      - name: Check the builder result (no model)
-        if: always()
+
+  verify:
+    needs: [snapshot, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check the builder result (no model, independent runner)
         env:
           GH_TOKEN: ${{ github.token }}
-          RESULT: ${{ steps.claude.outputs.structured_output }}
-        run: |
-          python3 "$RUNNER_TEMP/builder_result.py" \
-            --before "$RUNNER_TEMP/builder-before.json" --result-env RESULT
+          BEFORE_STATE: ${{ needs.snapshot.outputs.state }}
+          RESULT: ${{ needs.build.outputs.result }}
+          BUILD_JOB_RESULT: ${{ needs.build.result }}
+        run: python3 .github/scripts/builder_result.py --verify
