@@ -354,7 +354,18 @@ def _read_forbidden_section(lines: list[str], header_at: int) -> tuple[list[str]
             problems.append(f"wall_forbidden has an unmatched backtick: {line.strip()[:60]!r}")
         # Every backticked token is a forbidden path, in a bullet or in prose, whatever it
         # looks like. A malformed bullet is also a problem (below), never a dropped path.
-        paths.extend(t.strip() for t in re.findall(r"`([^`]+)`", line) if t.strip())
+        for token in re.findall(r"`([^`]+)`", line):
+            # The text between backticks is the exact path, spaces included: trimming it
+            # would forbid a different path (delta-2 review A4). Edge spaces and empty
+            # tokens are problems; the exact text stays forbidden either way.
+            if not token.strip():
+                problems.append(
+                    f"wall_forbidden has an empty backticked path: {line.strip()[:60]!r}"
+                )
+                continue
+            if token != token.strip():
+                problems.append(f"a wall_forbidden path starts or ends with a space: {token!r}")
+            paths.append(token)
 
     in_bullets = False
     for line in body:
@@ -931,14 +942,26 @@ def login(obj: dict) -> str:
 
 
 class PullKeptChanging(Exception):
-    """The head or base of a pull request moved on every attempt to read it."""
+    """What admission depends on in a pull request moved on every attempt to read it."""
 
 
-def _pin(full: dict) -> tuple[str, str]:
-    """The two commits a reading is about: the head and the base the pull request sits on."""
+def _admission_view(full: dict) -> tuple:
+    """Everything in one `GET /pulls/{n}` that admission depends on (delta-2 review A5): head
+    and base commits, head repository, base branch, open state, draft flag, labels, title, and
+    body. If any of it differs between the first and last read of a snapshot, reading starts
+    over, so a `hold` or draft that lands mid-read is never dropped."""
+    head = full.get("head") or {}
+    base = full.get("base") or {}
     return (
-        ((full.get("head") or {}).get("sha") or ""),
-        ((full.get("base") or {}).get("sha") or ""),
+        head.get("sha") or "",
+        base.get("sha") or "",
+        (head.get("repo") or {}).get("full_name") or "",
+        base.get("ref") or "",
+        full.get("state"),
+        bool(full.get("draft")),
+        tuple(sorted((label.get("name") or "") for label in full.get("labels") or [])),
+        full.get("title"),
+        full.get("body") or "",
     )
 
 
@@ -948,14 +971,15 @@ def gather(gh: GitHub, pr: dict, main_sha: str, merged: frozenset[str]) -> PullF
     Only `pr["number"]` comes from the caller (the list response may be stale: a label or a
     push can land between the list and now). Every other fact comes from ONE fresh
     `GET /pulls/{number}`, then the files, evidence, and report are read for that head. After
-    reading, the pull request is fetched again; if its head or base moved meanwhile, the
-    reading starts over, at most MAX_SNAPSHOT_ATTEMPTS times, then PullKeptChanging.
+    reading, the pull request is fetched again; if anything in `_admission_view` changed
+    meanwhile (head, base, labels, draft, title, body, ...), the reading starts over, at most
+    MAX_SNAPSHOT_ATTEMPTS times, then PullKeptChanging.
     """
     number = pr["number"]
     for _ in range(MAX_SNAPSHOT_ATTEMPTS):
         full = gh.request("GET", f"/pulls/{number}")
         facts = _gather_snapshot(gh, number, full, main_sha, merged)
-        if _pin(gh.request("GET", f"/pulls/{number}")) == _pin(full):
+        if _admission_view(gh.request("GET", f"/pulls/{number}")) == _admission_view(full):
             return facts
     raise PullKeptChanging(KEPT_CHANGING_REASON)
 

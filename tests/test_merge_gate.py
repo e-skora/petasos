@@ -3091,3 +3091,82 @@ def test_a3_unchanged_fresh_facts_still_post_the_request():
     fake = FakeGitHubForMain(MERGED)
     run_main(fake, [ready_facts(reviews=[]), ready_facts(reviews=[])], wait_seconds="0")
     assert codex_request_posted(fake)
+
+
+# ---- Delta-2 review A4: a backticked forbidden path is never trimmed
+
+A4_PATH = "src/petasos/mcp/server.py "
+
+
+def test_a4_a_trailing_space_path_is_kept_exactly_and_is_a_problem():
+    plan = "wall_expected:\n- `src/petasos/**`\nwall_forbidden:\n- `src/petasos/mcp/server.py `\n"
+    paths, problems = merge_gate.read_wall_forbidden(plan)
+    assert paths == [A4_PATH]
+    assert any("starts or ends with a space" in p for p in problems)
+    assert a1_refused(plan, A4_PATH)
+    assert_not_ready(a1_facts(plan, A4_PATH), UNREADABLE)
+
+
+def test_a4_a_leading_space_path_is_kept_exactly_and_is_a_problem():
+    plan = A1_EXPECTED + "wall_forbidden: plus:\n- ` Dockerfile`\n"
+    paths, problems = merge_gate.read_wall_forbidden(plan)
+    assert paths == [" Dockerfile"]
+    assert any("starts or ends with a space" in p for p in problems)
+
+
+def test_a4_an_empty_or_blank_backticked_path_is_a_problem():
+    plan = A1_EXPECTED + "wall_forbidden: plus:\n- `src/petasos/trust/**`\n- `   `\n"
+    paths, problems = merge_gate.read_wall_forbidden(plan)
+    assert paths == ["src/petasos/trust/**"]
+    assert any("empty backticked path" in p for p in problems)
+
+
+def test_a4_ordinary_paths_are_unchanged_and_valid():
+    plan = A1_EXPECTED + "wall_forbidden: plus:\n- `src/petasos/mcp/server.py`\n- `Dockerfile`\n"
+    assert merge_gate.read_wall_forbidden(plan) == (
+        ["src/petasos/mcp/server.py", "Dockerfile"],
+        [],
+    )
+
+
+# ---- Delta-2 review A5: a hold or draft on the last pull read is never dropped
+
+
+@pytest.mark.parametrize("changed", [{"labels": [{"name": "hold"}]}, {"draft": True}])
+def test_a5_real_gather_starts_over_when_the_last_read_changes_metadata(changed):
+    fake = FakeGitHubForGather()
+    fake.pull_reads = [pull_full(), pull_full(**changed)]
+    facts = gather(fake, open_pr_dict(), MAIN_SHA, frozenset())
+    assert fake.pull_gets == 4
+    assert ("hold" in facts.labels) or facts.draft
+    assert not evaluate(facts).ready
+
+
+@pytest.mark.parametrize("changed", [{"labels": [{"name": "hold"}]}, {"draft": True}])
+def test_a5_main_does_not_ask_codex_when_the_last_pull_read_shows_a_hold_or_draft(changed):
+    """The reviewer's reproduction: scan reads 1-2 clean; the pre-request gather's read 3 is
+    clean and read 4 has the hold or draft. Real gather() decides what the metadata is."""
+    reader = FakeGitHubForGather()
+    reader.pull_reads = [pull_full(), pull_full(), pull_full(), pull_full(**changed)]
+
+    def via_real_gather(gh, pr, main_sha, merged):
+        real = gather(reader, pr, main_sha, merged)
+        return replace(ready_facts(reviews=[]), labels=real.labels, draft=real.draft)
+
+    fake = FakeGitHubForMain(MERGED)
+    run_main(fake, ready_facts(reviews=[]), wait_seconds="0", gather_side_effect=via_real_gather)
+    assert not codex_request_posted(fake)
+    assert reader.pull_gets == 6
+
+
+def test_a5_unchanged_reads_still_post_the_request_through_real_gather():
+    reader = FakeGitHubForGather()
+
+    def via_real_gather(gh, pr, main_sha, merged):
+        real = gather(reader, pr, main_sha, merged)
+        return replace(ready_facts(reviews=[]), labels=real.labels, draft=real.draft)
+
+    fake = FakeGitHubForMain(MERGED)
+    run_main(fake, ready_facts(reviews=[]), wait_seconds="0", gather_side_effect=via_real_gather)
+    assert codex_request_posted(fake)
+    assert reader.pull_gets == 4
